@@ -48,7 +48,7 @@ Agent / AI Client / Protocol Client
              LifeSpace
 ```
 
-For dynamic clients, LifeSpace already provides both current-subject and Space-scoped Runtime Discovery:
+For dynamic clients, LifeSpace provides both current-subject and Space-scoped Runtime Discovery:
 
 ```text
 GET /api/v1/me/_discovery
@@ -74,21 +74,36 @@ docs/
 
 ## Current status（当前状态）
 
-The repository is at the **bootstrap / contract-alignment stage（骨架 / 契约对齐阶段）**.
+The repository has entered **MCP Adapter M1: Tool Projection Core（MCP 工具投影核心）**.
 
-- Repository boundary: defined.
-- Public-repository safety baseline: defined.
-- Canonical LifeSpace contract-consumption rules: defined.
-- MCP adapter implementation: **not implemented yet**.
-- Deployment runtime: **not selected yet**.
+Implemented in M1:
 
-The next milestone is to define and prove the smallest MCP projection from current LifeSpace Runtime Discovery and immutable Model Contract behavior.
+- deterministic projection from current LifeSpace Runtime Discovery plus one pinned immutable Model Contract Revision into per-Space MCP tool definitions;
+- exact preservation of Model Contract JSON request schemas, including concurrency annotations and complex JSON Schema composition;
+- deterministic binding from projected tool arguments to canonical LifeSpace HTTP method/path/query/body structure;
+- fail-closed behavior for missing/mismatched Model Contract evidence, unsupported references and unsafe tool names;
+- tests covering authority-driven visibility changes, Space separation, stale capability removal, Platform Admin exclusion and request construction.
+
+Not implemented yet:
+
+- MCP Streamable HTTP server/transport;
+- MCP authorization handshake / credential acquisition;
+- live LifeSpace HTTP execution;
+- deployment runtime.
+
+M1 intentionally does not use a privileged Model Admin credential at runtime. A deployable adapter must receive explicit immutable `mct_*` evidence through its release/deployment input and use the caller's real LifeSpace execution context for discovery and execution.
+
+Run the current adapter tests with:
+
+```bash
+npm test
+```
 
 ## Documentation（文档）
 
 - [Architecture and ownership boundary](docs/architecture.md)
 - [LifeSpace contract consumption](docs/lifespace-contract-consumption.md)
-- [MCP adapter boundary](docs/mcp-adapter.md)
+- [MCP adapter boundary and milestones](docs/mcp-adapter.md)
 - [GitHub public-repository hardening](docs/github-hardening.md)
 
 ## License（许可）

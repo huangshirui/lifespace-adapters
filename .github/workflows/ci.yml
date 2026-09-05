@@ -69,6 +69,13 @@ jobs:
             exit 1
           fi
 
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - name: Test MCP adapter projection core
+        run: npm test
+
   secret-scan:
     runs-on: ubuntu-latest
     steps:
