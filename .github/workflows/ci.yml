@@ -24,11 +24,12 @@ jobs:
             SECURITY.md
             CONTRIBUTING.md
             LICENSE
-            docs/requirements-v0.1.md
-            docs/domain-model-v0.1.md
-            docs/versioning-and-layout-v0.1.md
-            docs/mcp-tool-surface-v0.1.md
             docs/architecture.md
+            docs/lifespace-contract-consumption.md
+            docs/mcp-adapter.md
+            docs/github-hardening.md
+            adapters/mcp/README.md
+            shared/README.md
           )
 
           for file in "${required_files[@]}"; do
@@ -38,8 +39,35 @@ jobs:
             fi
           done
 
+          forbidden_paths=(
+            apps/api/README.md
+            apps/web/README.md
+            docs/requirements-v0.1.md
+            docs/domain-model-v0.1.md
+            docs/versioning-and-layout-v0.1.md
+            docs/mcp-tool-surface-v0.1.md
+            packages/adapters/README.md
+            packages/domain/README.md
+            packages/mcp/README.md
+            schemas/v0.1/README.md
+          )
+
+          for path in "${forbidden_paths[@]}"; do
+            if [[ -e "$path" ]]; then
+              echo "Atlas template residue must be removed: $path" >&2
+              exit 1
+            fi
+          done
+
+          grep -q "LifeSpace Adapters" README.md
+          grep -q "LifeSpace Adapters Agent Instructions" AGENTS.md
           grep -q "AGPL-3.0-or-later" README.md
           grep -q "AGPL-3.0-or-later" AGENTS.md
+
+          if grep -R -n --exclude=LICENSE --exclude=ci.yml --exclude-dir=.git "AISR Atlas" .; then
+            echo "Atlas template residue found in current tree" >&2
+            exit 1
+          fi
 
   secret-scan:
     runs-on: ubuntu-latest

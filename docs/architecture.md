@@ -1,110 +1,126 @@
-# AISR Atlas 系统架构边界
+# Architecture（架构）
 
-## 1. 独立项目
+## 1. Positioning（定位）
 
-AISR Atlas 是独立项目，不以 LifeSpace 作为基础底座（Foundation）。
+LifeSpace Adapters is an **Adapter（适配器）** layer, not a platform/domain layer.
 
-原因：Atlas 是观察和协调整个系统族的元系统 / 控制面（Meta-system / Control Plane），而 LifeSpace 本身也是 Atlas 的被观察对象之一。
-
-关键原则：
-
-> **The system being observed must not be required for the observability / control plane to operate.**  
-> 被观察系统不能成为观察 / 控制面运行的必需依赖。
-
-因此：
-
-- LifeSpace 故障时，Atlas 仍应能够打开并展示其状态；
-- ALOHA、HomeMew、Relay、n8n 等也不应成为 Atlas 的启动前置条件；
-- 反过来，业务系统也不应把 Atlas 放进核心运行请求链路。
-
-## 2. V0.1 逻辑结构
+Its responsibility is to translate canonical LifeSpace contracts into external protocol surfaces while preserving LifeSpace-owned semantics and authorization boundaries.
 
 ```text
-Human / AI Clients
-       │
-       ├── Web
-       └── MCP / Tool
-              │
-              ▼
-        AISR Atlas API
-              │
-      ┌───────┼────────┐
-      ▼       ▼        ▼
-   Domain   Layout   State
-   Model    Model    Model
-      │
-      ▼
-Workspace / Unit Graph
-Draft / Revision / Diff
+Protocol Client / Agent
+        │
+        ▼
+LifeSpace Adapter
+        │
+        ▼
+LifeSpace canonical contracts
+        │
+        ▼
+LifeSpace Core / Identity / Generic Runtime
 ```
 
-## 3. 仓库模块边界
+The adapter can change protocol shape. It cannot change what the data means, who is authorized, or what a valid mutation is.
 
-### `apps/web`
+## 2. Ownership boundary（所有权边界）
 
-面向人的 Canvas（画布）与 View（视图）。负责可视化与交互，不拥有 Canonical Model 的业务规则。
+| Concern | Owner |
+| --- | --- |
+| Global Identity（全局身份） | LifeSpace |
+| Space / Membership / Data Grant（空间 / 成员 / 数据授权） | LifeSpace |
+| Principal / Actor / Application Context（权限主体 / 执行者 / 应用上下文） | LifeSpace |
+| Agent Delegation（Agent 委托） | LifeSpace |
+| Model Definition / Registry / domain semantics（模型定义 / 注册表 / 领域语义） | LifeSpace |
+| Effective capability pruning（有效能力裁剪） | LifeSpace Runtime Discovery |
+| Mutation validation / Policy / concurrency（变更校验 / 策略 / 并发） | LifeSpace |
+| Protocol session / transport | LifeSpace Adapters |
+| LifeSpace -> protocol schema projection | LifeSpace Adapters |
+| Protocol-specific naming / compatibility / error mapping | LifeSpace Adapters |
 
-### `apps/api`
+## 3. Runtime Discovery（运行时发现）
 
-Atlas API / 后端控制面。负责持久化、领域操作、Revision、Layout、State 等服务入口。
+LifeSpace exposes current effective capability projections through:
 
-### `packages/domain`
+```text
+GET /api/v1/me/_discovery
+GET /api/v1/spaces/{spaceId}/_discovery
+```
 
-最核心模块。负责：
+The cross-Space current-principal endpoint is a Core capability. Adapters should not re-create its semantics by fetching `/me/spaces` and independently merging every Space.
 
-- Workspace / Unit / Relationship / Facet 等领域类型；
-- V0.1 Invariants（不变量）；
-- Draft / Publish / Diff 规则；
-- Definition / Runtime / Work 三类数据边界；
-- Schema 校验。
+The adapter consumes the already-pruned discovery result. It must not recompute:
 
-UI 和 MCP 都不应绕过 Domain Rule 直接改变模型语义。
+```text
+credential scope
+∩ Application × Model Access
+∩ Space membership / Data Grant
+∩ Agent Delegation when applicable
+∩ published model/capability restrictions
+```
 
-### `packages/mcp`
+That intersection belongs to LifeSpace Core.
 
-面向 ChatGPT、其他 AI / Agent 的 MCP / Tool 接口。
+Discovery remains a **capability preview（能力预览）**, not proof that a later call is authorized. Every execution goes through the canonical LifeSpace operation, where current authority, Policy（策略）, semantic validation and optimistic concurrency are rechecked.
 
-原则：AI 直接读取结构化 Model，不通过视觉识别理解架构。
+## 4. Contract layers（契约层）
 
-### `packages/adapters`
+Adapters may consume three LifeSpace contract families:
 
-GitHub、Cloudflare、n8n、Observability 等外部事实源适配器。
+1. Identity Application Contract（身份应用契约） for authentication/identity flows that a specific adapter actually needs;
+2. Core Kernel Contract（核心内核契约） for Runtime Discovery and other explicitly supported Kernel operations;
+3. immutable Model Contract Revision（不可变模型契约修订） for ordinary model CRUD/query/action syntax.
 
-V0.1 只留边界，不要求自动接入完成。
+Platform Admin Contract（平台管理契约） is excluded from ordinary protocol discovery and ordinary Agent tool exposure.
 
-### `schemas`
+The adapter repository does not maintain a copied canonical OpenAPI/JSON Schema set. Any cache/fixture used for testing must be clearly non-authoritative and tied to an explicit upstream contract version/revision.
 
-对外稳定的机器可读 Schema。Schema 版本与应用代码版本解耦管理。
+## 5. Protocol projection rules（协议投影规则）
 
-## 4. 初始部署方向
+A protocol adapter may:
 
-当前预期：
+- rename or group operations to fit protocol constraints;
+- translate JSON Schema into a protocol-supported input schema subset;
+- map protocol transport/session behavior to HTTP/API calls;
+- normalize upstream errors into protocol-compatible errors while preserving machine-relevant cause;
+- omit unsupported capabilities when it cannot represent them safely.
 
-- Web：React + React Flow；
-- API：Cloudflare Worker；
-- 持久化：Cloudflare D1（正式引入时再落表结构）；
-- 访问保护：优先 Cloudflare Access；
-- AI 接入：MCP / Tool。
+A protocol adapter must not:
 
-这些属于实现方向，不应反向污染领域模型。例如 Unit 不应包含 React Flow 的 Shape 配置。
+- create new authority from protocol metadata;
+- convert hidden/unavailable operations into visible tools;
+- weaken required semantic input or concurrency evidence;
+- infer permissions from tool visibility alone;
+- bypass canonical LifeSpace APIs or call storage directly;
+- expose privileged platform-control operations through ordinary Agent discovery.
 
-## 5. 事实所有权
+## 6. Principal / Actor / Application Context（主体 / 执行者 / 应用上下文）
 
-Atlas 拥有：
+The adapter must preserve these operation roles when they differ:
 
-- Canonical System Graph（规范系统图谱）；
-- Draft / Published Revision；
-- Diff / Change Log；
-- Layout；
-- Unit 与外部事实源的映射；
-- Atlas 自身的 Runtime / Work State 投影。
+```text
+principal          = whose authority is exercised
+actor              = who/what executes or initiates
+applicationContext = through which application context the operation occurs
+```
 
-外部系统继续拥有各自事实：
+For delegated Agent execution, the Adapter does not create the delegation and does not replace it with a broad service credential. It consumes a trusted execution context/credential that LifeSpace recognizes and lets LifeSpace perform current delegation checks.
 
-- GitHub：代码、Issue、PR、CI；
-- Notion：文档、计划、决策；
-- Cloudflare / Runtime：部署和运行事实；
-- n8n：工作流运行事实；
-- 其他监控系统：Metrics / Logs / Alerts / Incidents。
+## 7. Repository shape（仓库结构）
 
-Atlas 连接和投影这些事实，而不是复制并取代所有外部系统。
+```text
+adapters/
+  mcp/
+shared/
+docs/
+```
+
+- `adapters/mcp/`: MCP-specific mapping, server/transport code, tests and packaging.
+- `shared/`: only reusable adapter concerns, such as a typed LifeSpace client or deterministic projection helpers, once real reuse is proven.
+- `docs/`: stable architecture and compatibility documentation.
+
+There is intentionally no `domain/` package, platform migration layer or duplicated Registry.
+
+## 8. Adjacent repositories（相邻仓库）
+
+`lifespace-n8n-nodes` remains a separate Platform Integration（平台集成） repository. n8n node UX and credential integration have a different lifecycle from protocol adapters and should not be moved here simply for consolidation.
+
+Applications such as ALOHA and HomeMew consume LifeSpace/adapter capabilities under their own Application Context and do not become submodules of this repository.
