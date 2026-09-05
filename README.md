@@ -1,84 +1,106 @@
-# AISR Atlas
+# LifeSpace Adapters
 
-AISR Atlas 是面向人类（Human）与 AI 共同使用的系统地图 / 协作控制面（System Atlas / Collaboration Control Plane）。
+LifeSpace Adapters is the **protocol adaptation layer（协议适配层）** for LifeSpace.
 
-它统一描述和呈现一个工作区（Workspace）中的：
+It turns canonical LifeSpace contracts and current Runtime Discovery（运行时发现） results into protocol-specific surfaces without duplicating LifeSpace domain semantics or authorization logic.
 
-- 架构（Architecture）
-- 开发（Development）
-- 部署（Deployment）
-- 运行（Runtime）
-- 运维（Operations）
-- 人机协作（Human-AI Collaboration）
+The first adapter is MCP（Model Context Protocol，模型上下文协议）.
 
-> **One shared system model, readable and operable by humans and AI.**  
-> 人与 AI 共享同一份系统模型；人通过画布理解和操作，AI 通过结构化模型与 MCP / Tool（模型上下文协议 / 工具）理解和更新。
+## What this repository owns（本仓库负责什么）
 
-## V0.1 核心目标
+- protocol-specific server / transport / session behavior;
+- deterministic projection from LifeSpace discovery/contracts into protocol schemas;
+- protocol-specific compatibility, naming and error mapping;
+- adapter-local tests and deployable packaging;
+- small shared helpers that remain adapter concerns.
 
-V0.1 不追求成为完整的研发、监控或白板平台，而是先验证最关键的闭环：
+## What this repository does not own（本仓库不负责什么）
 
-**工作区（Workspace） → 单元图谱（Unit Graph） → 草稿（Draft） → 视图 / 布局（View / Layout） → 差异（Diff） → 发布（Publish） → 修订版本（Revision）**
+The following remain authoritative in [`huangshirui/LifeSpace`](https://github.com/huangshirui/LifeSpace):
 
-核心原则：
+- Identity（身份）;
+- Space / Membership / Data Grant（空间 / 成员关系 / 数据授权）;
+- Principal / Actor / Application Context（权限主体 / 执行者 / 应用上下文）;
+- Agent Delegation（Agent 委托）;
+- Shared Reality（共享现实） domain models;
+- Model Definition / Registry / Model Contract（模型定义 / 注册表 / 模型契约）;
+- Runtime Discovery（运行时发现） and current effective capability pruning;
+- Policy（策略）, validation, optimistic concurrency and governed Change（受治理变更）.
 
-- Atlas 的核心不是“画图”，而是维护规范系统图谱（Canonical System Graph）。
-- 模型（Model）决定“系统是什么”；视图（View）决定“当前看什么”；布局（Layout）决定“画在哪里”。
-- 画布拖动只改变布局，不隐式改变架构语义。
-- 定义性数据（Definition）进入草稿 / 修订版本；运行性数据（Runtime State）和工作性数据（Work State）进入当前状态 / 事件 / 时间线。
-- AI 默认读取最新草稿，不强制加载完整变更日志（Change Log）；需要追溯时再主动查询。
-- 发布（Publish）必须来自用户明确指令；AI 不得自行决定发布。
+This repository must not access LifeSpace databases directly or become a second source of truth for those concerns.
 
-## 仓库结构
+## Architecture（架构）
 
 ```text
-apps/
-  web/          面向人的画布与视图
-  api/          Atlas API / 控制面后端
-packages/
-  domain/       领域模型、校验与核心规则
-  mcp/          面向 AI 的 MCP / Tool 能力
-  adapters/     外部事实源适配器（V0.1 后逐步接入）
-schemas/
-  v0.1/         V0.1 机器可读 Schema（待定义）
+Agent / AI Client / Protocol Client
+                │
+                ▼
+       LifeSpace Adapters
+       ├── MCP
+       └── future protocols
+                │
+                ▼
+       Canonical LifeSpace APIs
+       + Runtime Discovery
+       + Model Contract Revision
+                │
+                ▼
+             LifeSpace
+```
+
+For dynamic clients, LifeSpace already provides both current-subject and Space-scoped Runtime Discovery:
+
+```text
+GET /api/v1/me/_discovery
+GET /api/v1/spaces/{spaceId}/_discovery
+```
+
+The adapter projects the already-authorized current capability surface. It does **not** independently recompute Membership / Grant / Delegation / Policy intersections, and execution still goes back through LifeSpace for authoritative checks.
+
+## Repository layout（仓库结构）
+
+```text
+adapters/
+  mcp/              MCP-specific implementation and tests
+shared/             protocol-agnostic adapter helpers only
 docs/
-  requirements-v0.1.md
-  domain-model-v0.1.md
-  versioning-and-layout-v0.1.md
-  mcp-tool-surface-v0.1.md
   architecture.md
+  lifespace-contract-consumption.md
+  mcp-adapter.md
   github-hardening.md
 ```
 
-## 文档基线
+`shared/` is deliberately not a domain layer. If a concept belongs to LifeSpace semantics or authorization, it belongs in LifeSpace rather than here.
 
-- [V0.1 需求基线](docs/requirements-v0.1.md)
-- [V0.1 领域模型](docs/domain-model-v0.1.md)
-- [版本与布局规则](docs/versioning-and-layout-v0.1.md)
-- [MCP / Tool 能力边界](docs/mcp-tool-surface-v0.1.md)
-- [系统架构边界](docs/architecture.md)
-- [GitHub 公开仓库加固基线](docs/github-hardening.md)
+## Current status（当前状态）
 
-## 开源许可（License）
+The repository is at the **bootstrap / contract-alignment stage（骨架 / 契约对齐阶段）**.
 
-AISR Atlas 采用 **GNU Affero General Public License v3.0 or later（GNU Affero 通用公共许可证第 3 版或更高版本）**，SPDX 标识为 `AGPL-3.0-or-later`。
+- Repository boundary: defined.
+- Public-repository safety baseline: defined.
+- Canonical LifeSpace contract-consumption rules: defined.
+- MCP adapter implementation: **not implemented yet**.
+- Deployment runtime: **not selected yet**.
+
+The next milestone is to define and prove the smallest MCP projection from current LifeSpace Runtime Discovery and immutable Model Contract behavior.
+
+## Documentation（文档）
+
+- [Architecture and ownership boundary](docs/architecture.md)
+- [LifeSpace contract consumption](docs/lifespace-contract-consumption.md)
+- [MCP adapter boundary](docs/mcp-adapter.md)
+- [GitHub public-repository hardening](docs/github-hardening.md)
+
+## License（许可）
+
+LifeSpace Adapters is licensed under **GNU Affero General Public License v3.0 or later (`AGPL-3.0-or-later`)**.
 
 Copyright (C) 2026 Shirui Huang.
 
-完整许可文本见 [`LICENSE`](LICENSE)。如引入第三方代码或资产，请先确认其许可与 Attribution（署名）要求与本项目兼容。
+See [`LICENSE`](LICENSE) for the full license text.
 
-## 安全（Security）
+## Security（安全）
 
-这是一个 Public Repository（公开仓库）。仓库只保存适合永久公开的源代码、公开文档和 Synthetic Data（合成数据）。不得提交真实用户数据、Secret / Credential（密钥 / 凭据）、生产日志、数据库导出、私有 Connector 输出或不应公开的线上基础设施信息。
+This is a Public Repository（公开仓库）. Do not commit real user data, credentials, production/staging payloads, private infrastructure metadata, or non-public connector/tool output.
 
-敏感漏洞不要通过公开 Issue / PR 披露，详见 [`SECURITY.md`](SECURITY.md)。Human / AI Contributor（人类 / AI 贡献者）的完整安全规则见 [`AGENTS.md`](AGENTS.md)。
-
-## 参与贡献（Contributing）
-
-提交改动前请阅读 [`AGENTS.md`](AGENTS.md) 和 [`CONTRIBUTING.md`](CONTRIBUTING.md)。领域语义变更应保持 Domain-first（领域优先），同步维护相关 Baseline Doc / Schema / Test（基线文档 / 模式 / 测试）。
-
-默认分支 `main` 的目标保护策略是 Pull Request + Required CI + Resolved Review Conversation + Squash Merge（拉取请求 + 必需持续集成 + 解决评审讨论 + 压缩合并）。仓库侧设置基线见 [`docs/github-hardening.md`](docs/github-hardening.md)。
-
-## 当前阶段
-
-当前处于 **V0.1 领域 Schema（Domain Schema）设计前的基线阶段**。下一步应先用真实 AISR 架构验证 Workspace / Unit / Containment / Relationship / Facet / Draft / Revision / Layout 等模型，再进入 Web 与 API 实现。
+Sensitive vulnerabilities must not be reported through public Issue / PR content. See [`SECURITY.md`](SECURITY.md) and [`AGENTS.md`](AGENTS.md).
