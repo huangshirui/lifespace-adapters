@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify repository baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required_files=(
+            README.md
+            AGENTS.md
+            SECURITY.md
+            CONTRIBUTING.md
+            LICENSE
+            docs/requirements-v0.1.md
+            docs/domain-model-v0.1.md
+            docs/versioning-and-layout-v0.1.md
+            docs/mcp-tool-surface-v0.1.md
+            docs/architecture.md
+          )
+
+          for file in "${required_files[@]}"; do
+            if [[ ! -s "$file" ]]; then
+              echo "Missing or empty required file: $file" >&2
+              exit 1
+            fi
+          done
+
+          grep -q "AGPL-3.0-or-later" README.md
+          grep -q "AGPL-3.0-or-later" AGENTS.md
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Public-repository safety must inspect history, not only the current tree.
+          fetch-depth: 0
+      - name: Scan full Git history for secrets
+        run: >-
+          docker run --rm
+          -v "$GITHUB_WORKSPACE:/repo"
+          ghcr.io/gitleaks/gitleaks:v8.29.1@sha256:aa036a2f4bdfe3cc3c55fa4326308efabb4a6be498c883c864fd1d0d5585438a
+          git --redact --no-banner /repo
