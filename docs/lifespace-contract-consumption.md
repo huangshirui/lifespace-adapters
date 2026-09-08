@@ -33,6 +33,8 @@ At repository bootstrap on **2026-09-05**, the current LifeSpace contract strate
 
 These numbers are an observed integration baseline, not a promise that adapters silently follow every future version. Once implementation begins, each adapter/release must declare and test its supported contract range or exact compatibility profile.
 
+The current implementation alignment target after LifeSpace #200 is Core Kernel `0.32.0`: `modelKey` is the sole ordinary-model Runtime address and canonical execution paths are `/api/v1/spaces/{spaceId}/models/{modelKey}/records/...`.
+
 ## Runtime Discovery（运行时发现）
 
 Current effective capability projection comes from LifeSpace Core:
@@ -51,6 +53,8 @@ The cross-Space response deliberately preserves Space boundaries. The adapter mu
 
 Runtime Discovery is not execution authorization. Revoked Membership, Grant, Delegation or Application access must still be denied by the subsequent canonical LifeSpace call even if a client holds stale discovery state.
 
+A caller that already has an authorized `spaceId + modelKey` does not need Discovery merely to translate a model into another Runtime address. Discovery remains for capability projection and semantic selection, not route lookup.
+
 ## Ordinary Model Contract Revisions（普通模型契约修订）
 
 Ordinary model CRUD/query/action syntax is intentionally absent from the handwritten Core Kernel OpenAPI. It belongs to immutable generated `mct_*` Model Contract Revisions.
@@ -61,7 +65,10 @@ Adapter rules:
 - use the active/selected Model Contract Revision as exact schema evidence when concrete request/response syntax is required;
 - do not assume one `mct_*` ID is globally identical across staging/production or independently evolved environments;
 - do not use environment-local Registry version numbers as global semantic identity;
-- preserve model `key`, `route`, `schemaHash` and contract metadata needed to prove compatibility.
+- preserve model `key`, `schemaHash` and contract metadata needed to prove compatibility;
+- execute ordinary model operations through `/api/v1/spaces/{spaceId}/models/{modelKey}/records/...` rather than maintaining a modelKey-to-route translation table;
+- treat any pre-#200 `route` found in historical immutable evidence only as historical representation, never as current Model identity;
+- do not emit or depend on LifeSpace Core's four fixed `/api/v1` legacy compatibility aliases in new adapter configuration. Those aliases exist only to keep already-deployed v1 consumers working and are never generated for future models.
 
 ## Kernel vs Platform Admin（内核与平台管理）
 
