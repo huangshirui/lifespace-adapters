@@ -51,7 +51,15 @@ Exact MCP tool naming and grouping will be chosen during implementation and cove
 
 ## Execution mapping（执行映射）
 
-For ordinary models, the adapter uses Runtime Discovery plus the relevant immutable Model Contract Revision to determine the canonical request shape.
+For ordinary models, `modelKey` is the sole LifeSpace Runtime address. Canonical execution uses:
+
+```text
+/api/v1/spaces/{spaceId}/models/{modelKey}/records/...
+```
+
+The adapter uses Runtime Discovery to determine the current callable capability surface and the relevant immutable Model Contract Revision to determine exact request/response semantics. It does **not** use Discovery as a modelKey-to-route lookup and does not maintain an adapter-local route table. If the trusted execution context already identifies `spaceId + modelKey`, the operation can address the canonical Runtime directly while execution still performs authoritative current-state checks.
+
+LifeSpace Core may preserve a bounded set of historical `/api/v1` aliases for already-deployed clients. New MCP tool/configuration output must not emit or depend on those aliases; future models are addressed only by `modelKey`.
 
 Rules:
 
