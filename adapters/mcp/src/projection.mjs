@@ -41,7 +41,13 @@ function scalarSchemaForType(type) {
     case "datetime": return { type: "string", format: "date-time" };
     case "person_list":
     case "record_list": return { type: "array", items: { type: "string" } };
-    default: return { type: "string" };
+    case "string":
+    case "text":
+    case "timezone":
+    case "enum":
+    case "person":
+    case "record": return { type: "string" };
+    default: fail(`unsupported field type ${JSON.stringify(type)}`);
   }
 }
 
@@ -187,8 +193,11 @@ function genericQueryTool(selection) {
     allowedSpaceIds: spaces.map((space) => space.spaceId),
     allowedArguments: Object.keys(schema.properties).filter((key) => key !== "spaceId").sort(),
     repeatableArguments: genericValues.length ? [sort.parameter] : [],
+    requiredArguments: [],
     dependencyGroups: Object.keys(dependentRequired).length
-      ? Object.entries(dependentRequired).map(([key, companions]) => [key, ...companions].sort()).filter((group, index, groups) => groups.findIndex((candidate) => candidate.join("\0") === group.join("\0")) === index)
+      ? Object.entries(dependentRequired)
+        .map(([key, companions]) => [key, ...companions].sort())
+        .filter((group, index, groups) => groups.findIndex((candidate) => candidate.join("\0") === group.join("\0")) === index)
       : [],
   };
   return {
@@ -260,6 +269,7 @@ function capabilityQueryTools(selection) {
         allowedSpaceIds: spaces.map((space) => space.spaceId),
         allowedArguments: Object.keys(schema.properties).filter((property) => property !== "spaceId").sort(),
         repeatableArguments: [],
+        requiredArguments: required.slice().sort(),
         dependencyGroups: required.length > 1 ? [required.slice().sort()] : [],
       },
     });
@@ -284,6 +294,9 @@ function assertArguments(binding, args) {
   const allowed = new Set(["spaceId", ...binding.allowedArguments]);
   for (const key of Object.keys(args)) {
     if (!allowed.has(key)) fail(`argument ${JSON.stringify(key)} was not projected for ${binding.toolName}`);
+  }
+  for (const name of binding.requiredArguments ?? []) {
+    if (args[name] === undefined) fail(`required argument ${JSON.stringify(name)} is missing for ${binding.toolName}`);
   }
   for (const group of binding.dependencyGroups ?? []) {
     const present = group.filter((name) => args[name] !== undefined);
