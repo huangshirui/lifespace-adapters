@@ -32,6 +32,7 @@ jobs:
             adapters/mcp/src/progressive-discovery.mjs
             adapters/mcp/src/projection.mjs
             adapters/mcp/test/projection.test.mjs
+            adapters/mcp/test/projection-fail-closed.test.mjs
             shared/README.md
           )
 
