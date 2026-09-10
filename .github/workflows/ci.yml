@@ -29,6 +29,9 @@ jobs:
             docs/mcp-adapter.md
             docs/github-hardening.md
             adapters/mcp/README.md
+            adapters/mcp/src/progressive-discovery.mjs
+            adapters/mcp/src/projection.mjs
+            adapters/mcp/test/projection.test.mjs
             shared/README.md
           )
 
@@ -68,6 +71,20 @@ jobs:
             echo "Atlas template residue found in current tree" >&2
             exit 1
           fi
+
+  mcp-projection:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Syntax check MCP projection core
+        run: |
+          node --check adapters/mcp/src/progressive-discovery.mjs
+          node --check adapters/mcp/src/projection.mjs
+      - name: Test MCP projection core
+        run: node --test adapters/mcp/test/*.test.mjs
 
   secret-scan:
     runs-on: ubuntu-latest
