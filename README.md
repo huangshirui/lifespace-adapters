@@ -48,12 +48,14 @@ Agent / AI Client / Protocol Client
              LifeSpace
 ```
 
-For dynamic clients, LifeSpace already provides both current-subject and Space-scoped Runtime Discovery:
+For dynamic clients, the default coarse discovery path is Progressive Runtime Discovery:
 
 ```text
-GET /api/v1/me/_discovery
-GET /api/v1/spaces/{spaceId}/_discovery
+GET /api/v1/me/_discovery/inventory
+GET /api/v1/spaces/{spaceId}/_discovery/models/{modelKey}
 ```
+
+The adapter first consumes the compact current-principal inventory, then fetches static semantic detail only for selected visible models. Full `/api/v1/me/_discovery` and Space-scoped discovery remain compatibility/fallback surfaces rather than the universal MCP input.
 
 The adapter projects the already-authorized current capability surface. It does **not** independently recompute Membership / Grant / Delegation / Policy intersections, and execution still goes back through LifeSpace for authoritative checks.
 
@@ -74,15 +76,18 @@ docs/
 
 ## Current status（当前状态）
 
-The repository is at the **bootstrap / contract-alignment stage（骨架 / 契约对齐阶段）**.
+The repository is moving from **contract alignment** into the first verified adapter implementation slice.
 
 - Repository boundary: defined.
 - Public-repository safety baseline: defined.
 - Canonical LifeSpace contract-consumption rules: defined.
-- MCP adapter implementation: **not implemented yet**.
+- MCP query Projection Core: **implemented and tested** against synthetic LifeSpace Core Kernel `0.35.0` semantic fixtures.
+- MCP Server / transport / OAuth integration: **not implemented yet**.
 - Deployment runtime: **not selected yet**.
 
-The next milestone is to define and prove the smallest MCP projection from current LifeSpace Runtime Discovery and immutable Model Contract behavior.
+The implemented M0 projection covers Progressive Discovery loading, deterministic MCP query Tool schemas, LifeSpace Time Semantics (`eq/lt/lte/gt/gte`, envelope timestamps, datetime local-date windows and grouped capability queries such as `calendar.window`), Space-scoped execution bindings and canonical modelKey-addressed query request construction.
+
+The next milestone is to bind this verified projection core to an actual MCP `2026-07-28` server/transport without changing the LifeSpace-owned semantic or authorization boundary.
 
 ## Documentation（文档）
 

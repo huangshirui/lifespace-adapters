@@ -4,70 +4,105 @@
 
 The MCP Adapter projects the current LifeSpace capability surface into MCP without turning MCP into a source of LifeSpace domain or authorization truth.
 
-Its first invariant is:
+Its invariant is:
 
 > **MCP `tools/list` reflects the current LifeSpace-effective capability projection for the authenticated execution context, and MCP `tools/call` executes only through canonical LifeSpace operations.**
 
-## Initial scope（首期范围）
+## Current implementation status（当前实现状态）
 
-The first implementation should prove the smallest useful loop:
+The first verified implementation slice is a **deployment-independent query Projection Core**. It does not yet provide an MCP Server, HTTP transport, OAuth integration or deployment package.
 
-```text
-MCP Client
-   │
-   ├── tools/list
-   │      │
-   │      ▼
-   │  LifeSpace Runtime Discovery
-   │
-   └── tools/call
-          │
-          ▼
-      canonical LifeSpace operation
-          │
-          ▼
-      authoritative recheck + execution
-```
-
-No static all-platform tool catalog should be maintained in this repository.
-
-## Discovery mapping（发现映射）
-
-Primary source:
+The implemented flow is:
 
 ```text
-GET /api/v1/me/_discovery
+MCP-facing adapter layer
+        │
+        ├── compact Progressive Discovery inventory
+        │       GET /api/v1/me/_discovery/inventory
+        │
+        ├── selected model semantic detail
+        │       GET /api/v1/spaces/{spaceId}/_discovery/models/{modelKey}
+        │
+        ├── deterministic MCP Tool inputSchema + binding
+        │
+        └── canonical LifeSpace query request
+                GET /api/v1/spaces/{spaceId}/models/{modelKey}/records
 ```
 
-Space-scoped source when needed:
+The M0 projection target is LifeSpace Core Kernel `0.35.0` and the MCP `2026-07-28` Tool schema model. The code intentionally remains independent from a concrete MCP SDK so transport/runtime selection can happen later without changing the projection semantics.
+
+## Progressive Discovery mapping（渐进式发现映射）
+
+Primary coarse source:
 
 ```text
-GET /api/v1/spaces/{spaceId}/_discovery
+GET /api/v1/me/_discovery/inventory
 ```
 
-The adapter must preserve Space Context（空间上下文）. If two Spaces expose the same model/action, the resulting MCP representation must still retain an unambiguous target Space rather than silently unioning them into one authority-free operation.
+The adapter or owning product selects the models relevant to the current tool surface. For each selected visible model it fetches one static semantic detail body through the inventory-provided `semanticDetailPathTemplate`.
 
-Exact MCP tool naming and grouping will be chosen during implementation and covered by deterministic tests. Tool names are protocol representation, not stable LifeSpace domain identifiers.
+The adapter must:
+
+- preserve Space Context（空间上下文） from inventory;
+- fetch semantic detail only for selected models rather than all visible models;
+- verify semantic detail `(key, version, schemaHash)` against the inventory snapshot and fail closed on drift;
+- keep readable Space IDs as distinct execution targets;
+- treat static semantic detail as semantics, not positive authorization evidence;
+- avoid relation target lookup/reference resolution until a projected input actually requires it.
+
+Full `/api/v1/me/_discovery` and `/api/v1/spaces/{spaceId}/_discovery` remain compatibility/fallback inputs, not the default MCP discovery path.
+
+Tool selection/ranking/top-K remains Adapter / owning-product context-economy behavior. It may narrow what is shown, but it must not broaden LifeSpace authority.
+
+## Query Tool projection（查询工具投影）
+
+For each selected readable model, the M0 Projection Core emits one Generic Query Tool. Its `inputSchema` is object-root JSON Schema 2020-12 and contains only metadata-backed arguments:
+
+- required `spaceId`, constrained to readable Spaces from inventory;
+- `q` when `query.search` exists;
+- exact/non-comparable filters from `query.filters`;
+- only `transport: "explicit"` comparison arguments from `query.comparisons`;
+- envelope `createdAt` / `updatedAt` comparisons when published by LifeSpace;
+- datetime local-date-window arguments using the exact published parameter names;
+- generic sort and pagination metadata from semantic detail.
+
+The adapter does not reconstruct `field.gte`, `field.lt` or any other REST parameter name. The published parameter is the transport.
+
+Legacy `field`, `fieldFrom` and `fieldTo` comparison aliases remain LifeSpace compatibility syntax and are not emitted into the new MCP Tool surface.
+
+For datetime local-date windows, the three published parameters are modeled with all-or-none JSON Schema dependency. The adapter forwards local dates and IANA timezone; **LifeSpace Core alone converts the local-date window into DST-safe instant boundaries**.
+
+## Capability Query projection（能力查询投影）
+
+Each safely representable entry from `query.capabilityQueries` becomes a separate MCP Tool. `calendar.window` is the first current example.
+
+The Tool projects:
+
+- the capability query's own published parameters and requiredness;
+- its standalone semantic sort values;
+- shared pagination;
+- the same readable `spaceId` set.
+
+The current LifeSpace `capabilityQueries` metadata does not yet declare which generic filters/search facets may be composed with a capability query. Runtime Calendar happens to support some combinations such as `q/status/attendee`, while other generic parameters are invalid on that path. Therefore M0 deliberately **does not guess composability**: the capability Tool is narrowed to its explicitly declared capability parameters, ordering and pagination until LifeSpace publishes a reusable composition contract.
 
 ## Execution mapping（执行映射）
 
-For ordinary models, `modelKey` is the sole LifeSpace Runtime address. Canonical execution uses:
+For ordinary model queries, `modelKey` is the sole LifeSpace Runtime address:
 
 ```text
-/api/v1/spaces/{spaceId}/models/{modelKey}/records/...
+/api/v1/spaces/{spaceId}/models/{modelKey}/records
 ```
 
-The adapter uses Runtime Discovery to determine the current callable capability surface and the relevant immutable Model Contract Revision to determine exact request/response semantics. It does **not** use Discovery as a modelKey-to-route lookup and does not maintain an adapter-local route table. If the trusted execution context already identifies `spaceId + modelKey`, the operation can address the canonical Runtime directly while execution still performs authoritative current-state checks.
+The Projection Core returns an internal execution binding next to each MCP Tool. The request builder:
 
-LifeSpace Core may preserve a bounded set of historical `/api/v1` aliases for already-deployed clients. New MCP tool/configuration output must not emit or depend on those aliases; future models are addressed only by `modelKey`.
+- accepts only arguments that were actually projected;
+- accepts only Space IDs present in that projected binding;
+- preserves repeated generic sort order;
+- forwards the exact LifeSpace parameter names;
+- performs no permission calculation and no timezone/DST conversion;
+- always builds the canonical modelKey-addressed GET request.
 
-Rules:
-
-- semantic Action input remains distinct from technical concurrency metadata;
-- required optimistic-concurrency evidence must not be dropped merely because MCP prefers a simpler input schema;
-- server defaults remain server-owned; the adapter must not pre-fill values in a way that changes omission semantics;
-- relation/cardinality semantics come from LifeSpace contract metadata rather than field-name guesses;
-- unsupported or ambiguous contract features fail closed instead of being approximated unsafely.
+A cached/stale Tool can therefore build a request that LifeSpace later denies after authority changes. This is correct: execution-time LifeSpace authorization remains authoritative.
 
 ## Authorization boundary（授权边界）
 
@@ -83,11 +118,11 @@ LifeSpace discovery and execution remain authoritative for:
 - record-level Policy;
 - current revocation state.
 
-A stale MCP tool list can therefore contain an operation that later fails after authority changes. This is correct: execution-time authorization is authoritative.
+A stale MCP tool list can contain an operation that later fails after authority changes. Tool visibility is a preview, not durable authority.
 
 ## Credential model（凭据模型）
 
-The MCP Adapter must operate with credentials that correspond to the real current execution context.
+The future MCP Server must operate with credentials corresponding to the real current execution context.
 
 It must not:
 
@@ -99,6 +134,8 @@ It must not:
 
 For a User represented by an Agent, current LifeSpace Delegation（委托） semantics and Actor attribution must be preserved.
 
+The M0 Projection Core does not own or persist credentials.
+
 ## Platform Admin exclusion（平台管理排除）
 
 Platform Admin / Console control-plane operations are out of scope for the ordinary MCP Adapter.
@@ -107,15 +144,14 @@ They must not appear in `tools/list` and must not be callable through generic fa
 
 ## Protocol surface（协议表面）
 
-MCP-specific concerns may include:
+The current projection output is designed to be consumed by an MCP `2026-07-28` server implementation:
 
-- server capabilities and lifecycle;
-- transport/session behavior;
-- tool names/descriptions/input schema;
-- protocol-compatible error objects;
-- optional resources/prompts only if a real LifeSpace use case requires them.
+- deterministic Tool names/order;
+- object-root JSON Schema 2020-12 `inputSchema`;
+- protocol-safe names using letters, digits, `_`, `-` and `.`;
+- no reliance on a transport session.
 
-Do not expose MCP Resources / Prompts simply for completeness. The initial adapter should implement only the protocol features required to prove dynamic capability discovery and safe execution.
+Server-specific concerns such as request routing headers, `tools/list` cache hints, actual `tools/call` result envelopes, HTTP lifecycle, OAuth and optional MCP extensions remain future work and must not be claimed as implemented by M0.
 
 ## Confirmation and model behavior（确认与模型行为）
 
@@ -123,17 +159,17 @@ MCP descriptions and model instructions are UX/behavior guidance, not authorizat
 
 If a consuming product such as ALOHA requires explicit confirmation for high-impact actions, that confirmation belongs to the trusted owning product/control layer and/or downstream governed operation, not to a prompt sentence inside this adapter.
 
-## First implementation acceptance（首期验收）
+## M0 verification（M0 验证）
 
-Before the MCP Adapter is considered implemented, tests should demonstrate at least:
+Synthetic tests prove at least:
 
-1. different authenticated contexts receive different tool surfaces when LifeSpace discovery differs;
-2. Space boundaries are preserved;
-3. Agent Delegation narrowing affects visible/callable capabilities through LifeSpace;
-4. a tool removed by current authorization cannot execute even if the client has stale discovery data;
-5. action semantic input and concurrency evidence are mapped correctly;
-6. unsupported contract metadata fails closed;
-7. no platform-admin operation is exposed;
-8. credentials and sensitive data are absent from logs/errors/fixtures.
+1. compact inventory is fetched once and only selected model details are loaded;
+2. semantic-detail identity drift fails closed;
+3. Space boundaries remain explicit and deterministic;
+4. Generic Query Tools expose explicit comparison transport, envelope timestamps and local-date-window semantics from upstream metadata;
+5. `calendar.window` becomes a separate generated capability Tool without Task/Event-specific source-code branches;
+6. unknown capability metadata and unprojected arguments fail closed;
+7. request construction preserves exact published parameter names and repeated sort ordering;
+8. local-date-window values are forwarded unchanged rather than converted to UTC by the Adapter.
 
-Deployment runtime and MCP transport are intentionally not fixed by this bootstrap document. Select them when implementation requirements are concrete.
+The next milestone is a real MCP Server / transport binding around this verified projection core. Before that server is considered implemented, broader end-to-end acceptance still needs to cover authenticated contexts, Delegation narrowing, execution-time revocation, mutation/action concurrency and credential handling.
