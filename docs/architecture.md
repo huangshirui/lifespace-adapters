@@ -31,6 +31,7 @@ The adapter can change protocol shape. It cannot change what the data means, who
 | Agent Delegation（Agent 委托） | LifeSpace |
 | Model Definition / Registry / domain semantics（模型定义 / 注册表 / 领域语义） | LifeSpace |
 | Effective capability pruning（有效能力裁剪） | LifeSpace Runtime Discovery |
+| Time Semantics / Calendar semantics | LifeSpace |
 | Mutation validation / Policy / concurrency（变更校验 / 策略 / 并发） | LifeSpace |
 | Protocol session / transport | LifeSpace Adapters |
 | LifeSpace -> protocol schema projection | LifeSpace Adapters |
@@ -38,16 +39,30 @@ The adapter can change protocol shape. It cannot change what the data means, who
 
 ## 3. Runtime Discovery（运行时发现）
 
-LifeSpace exposes current effective capability projections through:
+For dynamic protocol clients, the default architecture is **Progressive Runtime Discovery（渐进式运行时发现）**:
 
 ```text
-GET /api/v1/me/_discovery
-GET /api/v1/spaces/{spaceId}/_discovery
+GET /api/v1/me/_discovery/inventory
+        │
+        ├── current visible Spaces / access edges
+        └── compact model identity/capability summaries
+                │
+                ▼
+      select relevant model keys
+                │
+                ▼
+GET /api/v1/spaces/{spaceId}/_discovery/models/{modelKey}
+        │
+        └── full static semantic detail only when needed
 ```
 
-The cross-Space current-principal endpoint is a Core capability. Adapters should not re-create its semantics by fetching `/me/spaces` and independently merging every Space.
+The cross-Space inventory remains a Core capability. Adapters must not re-create its authority semantics by fetching `/me/spaces` and independently merging every Space.
 
-The adapter consumes the already-pruned discovery result. It must not recompute:
+One readable Space can be used to fetch the static semantic body for a selected model. The adapter verifies `(key, version, schemaHash)` against inventory, while preserving every readable Space as a distinct execution target.
+
+Full `/api/v1/me/_discovery` and `/api/v1/spaces/{spaceId}/_discovery` remain compatibility/fallback surfaces rather than the universal dynamic-client input.
+
+The adapter consumes already-pruned discovery state. It must not recompute:
 
 ```text
 credential scope
@@ -73,6 +88,8 @@ Platform Admin Contract（平台管理契约） is excluded from ordinary protoc
 
 The adapter repository does not maintain a copied canonical OpenAPI/JSON Schema set. Any cache/fixture used for testing must be clearly non-authoritative and tied to an explicit upstream contract version/revision.
 
+For MCP M0, synthetic fixtures model Core Kernel `0.35.0` progressive semantic detail, including explicit Generic Query comparisons, envelope timestamps, local-date windows and grouped capability queries.
+
 ## 5. Protocol projection rules（协议投影规则）
 
 A protocol adapter may:
@@ -81,7 +98,8 @@ A protocol adapter may:
 - translate JSON Schema into a protocol-supported input schema subset;
 - map protocol transport/session behavior to HTTP/API calls;
 - normalize upstream errors into protocol-compatible errors while preserving machine-relevant cause;
-- omit unsupported capabilities when it cannot represent them safely.
+- omit unsupported capabilities when it cannot represent them safely;
+- perform deterministic ranking/top-K selection for context economy after LifeSpace has supplied the visible inventory.
 
 A protocol adapter must not:
 
@@ -90,9 +108,38 @@ A protocol adapter must not:
 - weaken required semantic input or concurrency evidence;
 - infer permissions from tool visibility alone;
 - bypass canonical LifeSpace APIs or call storage directly;
-- expose privileged platform-control operations through ordinary Agent discovery.
+- expose privileged platform-control operations through ordinary Agent discovery;
+- reconstruct LifeSpace query parameter names, timezone conversion rules or cross-field semantics from naming conventions.
 
-## 6. Principal / Actor / Application Context（主体 / 执行者 / 应用上下文）
+When upstream metadata describes a semantic capability but omits a composition rule needed by the target protocol, the adapter narrows or omits the protocol surface rather than guessing.
+
+## 6. MCP M0 projection boundary（MCP M0 投影边界）
+
+The first implementation slice deliberately separates **projection semantics** from **server runtime/transport**.
+
+Implemented now:
+
+```text
+Progressive inventory/detail loader
+        +
+deterministic MCP query Tool schema projection
+        +
+canonical modelKey query request builder
+```
+
+Not implemented yet:
+
+```text
+MCP HTTP/server lifecycle
+OAuth / credential acquisition
+remote deployment runtime
+actual tools/list + tools/call transport handlers
+mutation/action projection
+```
+
+This split keeps the first code review focused on whether LifeSpace semantics are projected correctly before transport choices add more moving parts.
+
+## 7. Principal / Actor / Application Context（主体 / 执行者 / 应用上下文）
 
 The adapter must preserve these operation roles when they differ:
 
@@ -104,7 +151,7 @@ applicationContext = through which application context the operation occurs
 
 For delegated Agent execution, the Adapter does not create the delegation and does not replace it with a broad service credential. It consumes a trusted execution context/credential that LifeSpace recognizes and lets LifeSpace perform current delegation checks.
 
-## 7. Repository shape（仓库结构）
+## 8. Repository shape（仓库结构）
 
 ```text
 adapters/
@@ -119,7 +166,7 @@ docs/
 
 There is intentionally no `domain/` package, platform migration layer or duplicated Registry.
 
-## 8. Adjacent repositories（相邻仓库）
+## 9. Adjacent repositories（相邻仓库）
 
 `lifespace-n8n-nodes` remains a separate Platform Integration（平台集成） repository. n8n node UX and credential integration have a different lifecycle from protocol adapters and should not be moved here simply for consolidation.
 
