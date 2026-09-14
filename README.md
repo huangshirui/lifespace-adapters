@@ -81,11 +81,11 @@ The repository is moving from **contract alignment** into the first verified ada
 - Repository boundary: defined.
 - Public-repository safety baseline: defined.
 - Canonical LifeSpace contract-consumption rules: defined.
-- MCP query Projection Core: **implemented and tested** against synthetic LifeSpace Core Kernel `0.35.0` semantic fixtures.
+- MCP Canonical Query Projection Core: **implemented and tested** against synthetic LifeSpace Core Kernel `0.36.0` semantic fixtures.
 - MCP Server / transport / OAuth integration: **not implemented yet**.
 - Deployment runtime: **not selected yet**.
 
-The implemented M0 projection covers Progressive Discovery loading, deterministic MCP query Tool schemas, LifeSpace Time Semantics (`eq/lt/lte/gt/gte`, envelope timestamps, datetime local-date windows and grouped capability queries such as `calendar.window`), Space-scoped execution bindings and canonical modelKey-addressed query request construction.
+The implemented M0 projection covers Progressive Discovery loading, exactly one Canonical Query Tool per selected model, descriptor-backed Search / nested typed Filter / ordered Sort / cursor Pagination, time-range and local-date-window operands, Space-scoped execution bindings and canonical modelKey-addressed POST request construction. Legacy Generic/Capability query metadata does not create a second MCP surface.
 
 The next milestone is to bind this verified projection core to an actual MCP `2026-07-28` server/transport without changing the LifeSpace-owned semantic or authorization boundary.
 
