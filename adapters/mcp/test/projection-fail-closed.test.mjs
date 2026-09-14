@@ -2,62 +2,88 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildLifeSpaceQueryRequest, projectSelectedModelsToMcp } from "../src/projection.mjs";
 
-function queryBase() {
+function canonical() {
   return {
+    invocation: { method: "POST", pathTemplate: "/api/v1/spaces/{spaceId}/models/{modelKey}/records/query" },
+    pipeline: ["search", "filter", "sort", "cursor-pagination"],
     search: null,
-    filters: [],
-    comparisons: [],
-    sort: { parameter: "sort", maxCriteria: 8, genericValues: [] },
-    pagination: {
-      limit: { parameter: "limit", minimum: 1, maximum: 200 },
-      cursor: { parameter: "cursor", type: "string" },
+    filter: {
+      maxDepth: 2,
+      maxNodes: 3,
+      targets: [{ field: "createdAt", kind: "envelope", valueType: "datetime", operators: ["eq", "within"], nullable: false }],
     },
-    capabilityQueries: [],
+    sort: {
+      fields: ["createdAt"], directions: ["asc", "desc"], maxCriteria: 2,
+      default: [{ field: "createdAt", direction: "desc" }], nullPlacement: "last", stableTieBreaker: "record-id-asc",
+    },
+    pagination: {
+      limit: { minimum: 1, maximum: 200, default: 100 },
+      cursor: { opaque: true, binds: [], snapshotConsistency: false },
+    },
   };
 }
 
-function selection(detail) {
+function selection(value = canonical()) {
   return {
     models: [{
-      detail,
+      detail: { key: "synthetic", display: { singular: "Synthetic", plural: "Synthetics" }, query: { canonical: value } },
       spaces: [{ spaceId: "spc_test", spaceName: "Synthetic", access: ["read"] }],
     }],
   };
 }
 
-test("unknown exact-filter field types fail closed instead of degrading to string", () => {
-  const query = queryBase();
-  query.filters = [{ field: "opaque", parameter: "opaque", mode: "exact" }];
-  const detail = {
-    key: "synthetic",
-    display: { singular: "Synthetic", plural: "Synthetics" },
-    fields: [{ key: "opaque", type: "future_type" }],
-    query,
-  };
-  assert.throws(() => projectSelectedModelsToMcp(selection(detail)), /unsupported field type/u);
+test("missing Canonical Query metadata fails closed", () => {
+  const selected = selection();
+  delete selected.models[0].detail.query.canonical;
+  assert.throws(() => projectSelectedModelsToMcp(selected), /query\.canonical must be an object/u);
 });
 
-test("request builder rechecks required capability arguments instead of trusting client schema validation", () => {
-  const query = queryBase();
-  query.capabilityQueries = [{
-    key: "synthetic.window",
-    capability: "synthetic",
-    parameters: [
-      { parameter: "windowStartDate", type: "date", required: true },
-      { parameter: "windowEndDateExclusive", type: "date", required: true },
-    ],
-    ordering: { parameter: "sort", values: ["windowStart:asc"] },
-  }];
-  const detail = {
-    key: "synthetic",
-    display: { singular: "Synthetic", plural: "Synthetics" },
-    fields: [],
-    query,
-  };
-  const projected = projectSelectedModelsToMcp(selection(detail));
-  const binding = projected.bindings["lifespace.query.synthetic.synthetic.window"];
+test("unknown invocation and pipeline fail closed", () => {
+  const get = canonical();
+  get.invocation.method = "GET";
+  assert.throws(() => projectSelectedModelsToMcp(selection(get)), /invocation is unsupported/u);
+  const reordered = canonical();
+  reordered.pipeline = ["filter", "search", "sort", "cursor-pagination"];
+  assert.throws(() => projectSelectedModelsToMcp(selection(reordered)), /pipeline is unsupported/u);
+});
+
+test("duplicate filter targets fail closed", () => {
+  const value = canonical();
+  value.filter.targets.push(structuredClone(value.filter.targets[0]));
+  assert.throws(() => projectSelectedModelsToMcp(selection(value)), /duplicate canonical filter target/u);
+});
+
+test("request builder rechecks filter depth and node bounds", () => {
+  const projected = projectSelectedModelsToMcp(selection());
+  const binding = projected.bindings["lifespace.query.synthetic"];
   assert.throws(
-    () => buildLifeSpaceQueryRequest(binding, { spaceId: "spc_test" }),
-    /required argument/u,
+    () => buildLifeSpaceQueryRequest(binding, {
+      spaceId: "spc_test",
+      filter: { and: [{ or: [{ field: "createdAt", op: "eq", value: "2026-09-01T00:00:00Z" }] }] },
+    }),
+    /exceeds maxDepth/u,
+  );
+  assert.throws(
+    () => buildLifeSpaceQueryRequest(binding, {
+      spaceId: "spc_test",
+      filter: { and: [
+        { field: "createdAt", op: "eq", value: "a" },
+        { field: "createdAt", op: "eq", value: "b" },
+        { field: "createdAt", op: "eq", value: "c" },
+      ] },
+    }),
+    /exceeds maxNodes/u,
+  );
+});
+
+test("malformed range operands fail closed rather than being normalized locally", () => {
+  const projected = projectSelectedModelsToMcp(selection());
+  const binding = projected.bindings["lifespace.query.synthetic"];
+  assert.throws(
+    () => buildLifeSpaceQueryRequest(binding, {
+      spaceId: "spc_test",
+      filter: { field: "createdAt", op: "within", value: { kind: "local_date_window", startDate: "2026-09-01" } },
+    }),
+    /endDateExclusive/u,
   );
 });

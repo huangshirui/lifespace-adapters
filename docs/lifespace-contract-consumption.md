@@ -27,11 +27,12 @@ Do not copy these into this repository as editable canonical definitions.
 
 At repository bootstrap on **2026-09-05**, the observed LifeSpace baseline was Identity Application Contract `0.6.0` and Core Kernel `0.23.0`. Those numbers remain historical evidence only.
 
-The current MCP query Projection Core alignment target is **Core Kernel `0.35.0`**. Relevant evolution includes:
+The current MCP query Projection Core alignment target is **Core Kernel `0.36.0`**. Relevant evolution includes:
 
 - `0.33.0`: canonical structural `timeRanges` in progressive semantic detail;
-- `0.34.0`: explicit Generic Query comparison semantics, envelope `createdAt` / `updatedAt`, and datetime local-date windows;
-- `0.35.0`: grouped capability queries, beginning with preferred `calendar.window` viewing-window semantics.
+- `0.34.0`: explicit comparison semantics, envelope timestamps and local-date windows;
+- `0.35.0`: grouped capability-query compatibility metadata;
+- `0.36.0`: `query.canonical` publishes one composable Search / Filter / Sort / cursor Pagination contract and the canonical model Query POST invocation.
 
 `modelKey` is the sole ordinary-model Runtime address and canonical execution paths are `/api/v1/spaces/{spaceId}/models/{modelKey}/records/...`.
 
@@ -68,19 +69,19 @@ Runtime Discovery is not execution authorization. Revoked Membership, Grant, Del
 
 A caller that already has an authorized `spaceId + modelKey` does not need Discovery merely to translate a model into another Runtime address. Discovery remains for capability projection and semantic selection, not route lookup.
 
-## Generic Query and Time Semantics（通用查询与时间语义）
+## Canonical Query and Time Semantics（统一查询与时间语义）
 
-For Core Kernel `0.35.0`, MCP query projection consumes the semantic detail rather than reconstructing query names:
+For Core Kernel `0.36.0`, MCP query projection consumes `query.canonical` rather than reconstructing transport parameters:
 
-- `query.filters` supplies exact/non-comparable filter transport;
-- `query.comparisons` supplies comparison field/source/value type plus concrete operator parameter names;
-- only `transport: "explicit"` comparison parameters are emitted into new MCP Tool schemas; legacy `field`, `fieldFrom`, and `fieldTo` remain LifeSpace compatibility syntax rather than a new protocol surface;
-- envelope `createdAt` / `updatedAt` are projected from `query.comparisons`, not invented locally;
-- datetime `localDateWindow` parameters are passed through unchanged. The adapter does not convert local dates to UTC or implement DST rules;
-- `query.capabilityQueries` becomes separate capability-query Tools when the semantics can be represented safely;
-- generic and capability sort values come from semantic detail rather than field-name inference.
+- `invocation` must publish the canonical `POST /api/v1/spaces/{spaceId}/models/{modelKey}/records/query` operation;
+- `search` determines whether the structured `{ text }` input is exposed and publishes its bounds;
+- `filter.targets` publishes fields, semantic kinds, value types, allowed operators, nullability and any current-actor `me` alias;
+- recursive `and` / `or` groups and predicates are carried as a structured Filter AST;
+- `local_date_window`, `date` and `instant` ranges are forwarded unchanged; Core alone owns IANA-timezone and DST conversion;
+- `sort` publishes fields, directions, maximum criteria, NULL-last behavior and stable tie-breaking;
+- `pagination` publishes bounded limit and opaque cursor behavior.
 
-A capability query currently does not declare which generic filters/search facets are safely composable with it. Until LifeSpace publishes that metadata, the MCP projection must **fail closed by narrowing the capability Tool** to its declared capability parameters, semantic ordering and shared pagination; it must not guess that every generic filter can be mixed with the capability query.
+Every selected readable model emits one MCP Query Tool. Compatibility fields such as `query.filters`, `query.comparisons`, and `query.capabilityQueries` do not generate Generic/Capability parallel tools. Unknown or missing canonical invocation, pipeline, field, operator or value shape fails closed.
 
 ## Ordinary Model Contract Revisions（普通模型契约修订）
 
@@ -127,4 +128,4 @@ Acceptable approaches include:
 - generated fixtures pinned to an explicit public LifeSpace contract version/revision with provenance;
 - integration tests against a dedicated test/staging environment when credentials are injected securely.
 
-The MCP M0 fixtures are synthetic and model Core Kernel `0.35.0` progressive inventory/detail semantics. A fixture is test evidence, not a new canonical contract. If fixture and LifeSpace disagree, LifeSpace wins and the adapter must be updated.
+The MCP M0 fixtures are synthetic and model Core Kernel `0.36.0` progressive inventory/detail plus Canonical Typed Query semantics. A fixture is test evidence, not a new canonical contract. If fixture and LifeSpace disagree, LifeSpace wins and the adapter must be updated.
