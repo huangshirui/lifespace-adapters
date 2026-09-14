@@ -88,7 +88,7 @@ Platform Admin Contract（平台管理契约） is excluded from ordinary protoc
 
 The adapter repository does not maintain a copied canonical OpenAPI/JSON Schema set. Any cache/fixture used for testing must be clearly non-authoritative and tied to an explicit upstream contract version/revision.
 
-For MCP M0, synthetic fixtures model Core Kernel `0.35.0` progressive semantic detail, including explicit Generic Query comparisons, envelope timestamps, local-date windows and grouped capability queries.
+For MCP M0, synthetic fixtures model Core Kernel `0.36.0` progressive semantic detail. One model Query Tool is derived from `query.canonical`, including Search, nested typed Filter, ordered Sort, cursor Pagination, envelope timestamps and time-range operands. Legacy Generic/Capability query metadata does not create parallel protocol surfaces.
 
 ## 5. Protocol projection rules（协议投影规则）
 
@@ -124,7 +124,7 @@ Progressive inventory/detail loader
         +
 deterministic MCP query Tool schema projection
         +
-canonical modelKey query request builder
+canonical modelKey Canonical Query POST request builder
 ```
 
 Not implemented yet:
