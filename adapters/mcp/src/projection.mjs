@@ -1,7 +1,12 @@
 const JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema";
 const TOOL_NAME_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/u;
 const CANONICAL_PATH = "/api/v1/spaces/{spaceId}/models/{modelKey}/records/query";
-const CANONICAL_PIPELINE = ["search", "filter", "sort", "cursor-pagination"];
+const CANONICAL_COMPOSITION = Object.freeze({
+  selectionFacets: ["search", "filter"],
+  selectionCombine: "intersection",
+  ordering: "sort",
+  pagination: "cursor-pagination",
+});
 const NULL_OPERATORS = new Set(["isNull", "isNotNull"]);
 
 function fail(message) {
@@ -58,42 +63,88 @@ function baseInputSchema(spaces) {
   };
 }
 
-function rangeOperandSchema() {
-  return {
-    oneOf: [
-      {
-        type: "object", additionalProperties: false,
-        required: ["kind", "startDate", "endDateExclusive", "timezone"],
-        properties: {
-          kind: { const: "local_date_window" },
-          startDate: { type: "string", format: "date" },
-          endDateExclusive: { type: "string", format: "date" },
-          timezone: { type: "string", description: "IANA timezone; Core owns DST-safe conversion." },
-        },
+function rangeOperandSchema(target) {
+  const variants = [{
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "startDate", "endDateExclusive", "timezone"],
+    properties: {
+      kind: { const: "local_date_window" },
+      startDate: { type: "string", format: "date" },
+      endDateExclusive: { type: "string", format: "date" },
+      timezone: { type: "string", description: "IANA timezone; Core owns DST-safe conversion." },
+    },
+  }];
+
+  if (["date", "date-range", "temporal-range"].includes(target.valueType)) {
+    variants.push({
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "start", "endExclusive"],
+      properties: {
+        kind: { const: "date" },
+        start: { type: "string", format: "date" },
+        endExclusive: { type: "string", format: "date" },
       },
-      {
-        type: "object", additionalProperties: false,
-        required: ["kind", "start", "endExclusive"],
-        properties: {
-          kind: { const: "date" },
-          start: { type: "string", format: "date" },
-          endExclusive: { type: "string", format: "date" },
-        },
+    });
+  }
+  if (["datetime", "instant-range", "temporal-range"].includes(target.valueType)) {
+    variants.push({
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "start", "endExclusive"],
+      properties: {
+        kind: { const: "instant" },
+        start: { type: "string", format: "date-time" },
+        endExclusive: { type: "string", format: "date-time" },
       },
-      {
-        type: "object", additionalProperties: false,
-        required: ["kind", "start", "endExclusive"],
-        properties: {
-          kind: { const: "instant" },
-          start: { type: "string", format: "date-time" },
-          endExclusive: { type: "string", format: "date-time" },
-        },
-      },
-    ],
-  };
+    });
+  }
+  return { oneOf: variants };
 }
 
-function filterSchema(canonical) {
+function scalarValueSchema(target) {
+  if (target.valueType === "integer") return { type: "integer" };
+  if (target.valueType === "number") return { type: "number" };
+  if (target.valueType === "boolean") return { type: "boolean" };
+  if (target.valueType === "date") return { type: "string", format: "date" };
+  if (target.valueType === "datetime") return { type: "string", format: "date-time" };
+  return { type: "string", minLength: 1 };
+}
+
+function predicateValueSchema(target, operator) {
+  const rangeOperator = ["within", "overlaps", "before", "after"].includes(operator)
+    || (operator === "contains" && ["date-range", "instant-range", "temporal-range"].includes(target.valueType));
+  if (rangeOperator) return rangeOperandSchema(target);
+  if (operator === "kindIs") return { type: "string", enum: ["date", "instant"] };
+  return scalarValueSchema(target);
+}
+
+function flatFilterBranches(canonical) {
+  const filter = object(canonical.filter, "query.canonical.filter");
+  const targets = array(filter.targets, "query.canonical.filter.targets");
+  if (!targets.length) fail("query.canonical.filter.targets must not be empty");
+  const branches = [];
+  for (const target of targets) {
+    const field = string(target.field, "canonical filter target field");
+    for (const rawOperator of array(target.operators, `canonical filter target ${field} operators`)) {
+      const operator = string(rawOperator, `canonical filter target ${field} operator`);
+      const properties = {
+        field: { type: "string", enum: [field] },
+        operator: { type: "string", enum: [operator] },
+      };
+      const required = ["field", "operator"];
+      if (!NULL_OPERATORS.has(operator)) {
+        properties.value = predicateValueSchema(target, operator);
+        required.push("value");
+      }
+      branches.push({ type: "object", additionalProperties: false, required, properties });
+    }
+  }
+  return branches;
+}
+
+function advancedFilterSchema(canonical) {
   const filter = object(canonical.filter, "query.canonical.filter");
   const targets = array(filter.targets, "query.canonical.filter.targets");
   if (!targets.length) fail("query.canonical.filter.targets must not be empty");
@@ -110,11 +161,11 @@ function filterSchema(canonical) {
   const variants = [
     {
       type: "object", additionalProperties: false, required: ["and"],
-      properties: { and: { type: "array", minItems: 1, maxItems: filter.maxNodes, items: { $ref: "#/$defs/filterNode" } } },
+      properties: { and: { type: "array", minItems: 1, maxItems: filter.maxNodes, items: { $ref: "#/$defs/advancedFilterNode" } } },
     },
     {
       type: "object", additionalProperties: false, required: ["or"],
-      properties: { or: { type: "array", minItems: 1, maxItems: filter.maxNodes, items: { $ref: "#/$defs/filterNode" } } },
+      properties: { or: { type: "array", minItems: 1, maxItems: filter.maxNodes, items: { $ref: "#/$defs/advancedFilterNode" } } },
     },
   ];
   if (nullOperators.length) {
@@ -131,7 +182,7 @@ function filterSchema(canonical) {
         op: { type: "string", enum: valueOperators },
         value: {
           description: "Core validates the value against the selected field semantic type and operator.",
-          oneOf: [{ type: "string" }, { type: "number" }, { type: "boolean" }, rangeOperandSchema()],
+          oneOf: [{ type: "string" }, { type: "number" }, { type: "boolean" }, { type: "object" }],
         },
       },
     });
@@ -145,6 +196,13 @@ function filterSchema(canonical) {
   };
 }
 
+function assertCanonicalComposition(canonical) {
+  const composition = object(canonical.composition, "query.canonical.composition");
+  if (JSON.stringify(composition) !== JSON.stringify(CANONICAL_COMPOSITION)) {
+    fail("query.canonical composition is unsupported");
+  }
+}
+
 function canonicalQueryTool(selection) {
   const detail = object(selection.detail, "selected semantic detail");
   const query = object(detail.query, "semantic detail query");
@@ -153,13 +211,11 @@ function canonicalQueryTool(selection) {
   if (invocation.method !== "POST" || invocation.pathTemplate !== CANONICAL_PATH) {
     fail("query.canonical invocation is unsupported");
   }
-  if (JSON.stringify(canonical.pipeline) !== JSON.stringify(CANONICAL_PIPELINE)) {
-    fail("query.canonical pipeline is unsupported");
-  }
+  assertCanonicalComposition(canonical);
 
   const spaces = readableSpaces(selection);
   const schema = baseInputSchema(spaces);
-  schema.$defs = { filterNode: filterSchema(canonical) };
+  schema.$defs = { advancedFilterNode: advancedFilterSchema(canonical) };
   const targetMap = {};
   for (const target of canonical.filter.targets) {
     if (Object.hasOwn(targetMap, target.field)) fail(`duplicate canonical filter target ${JSON.stringify(target.field)}`);
@@ -171,18 +227,27 @@ function canonicalQueryTool(selection) {
     search = object(canonical.search, "query.canonical.search");
     array(search.fields, "query.canonical.search.fields");
     schema.properties.search = {
-      type: "object", additionalProperties: false, required: ["text"],
-      properties: {
-        text: {
-          type: "string",
-          ...(Number.isInteger(search.minLength) ? { minLength: search.minLength } : {}),
-          ...(Number.isInteger(search.maxLength) ? { maxLength: search.maxLength } : {}),
-        },
-      },
+      type: "string",
+      ...(Number.isInteger(search.minLength) ? { minLength: search.minLength } : {}),
+      ...(Number.isInteger(search.maxLength) ? { maxLength: search.maxLength } : {}),
+      description: `Keyword search across ${search.fields.join(", ")}. Search and filters jointly constrain the candidate set.`,
       "x-lifespace-searchable-fields": structuredClone(search.fields),
     };
   }
-  schema.properties.filter = { $ref: "#/$defs/filterNode" };
+
+  const simpleFilterBranches = flatFilterBranches(canonical);
+  if (simpleFilterBranches.length) {
+    schema.properties.filters = {
+      type: "array",
+      maxItems: canonical.filter.maxNodes,
+      items: { oneOf: simpleFilterBranches },
+      description: "High-frequency typed predicates combined with AND. Use advancedFilter instead when nested AND/OR logic is required.",
+    };
+    schema.properties.advancedFilter = {
+      $ref: "#/$defs/advancedFilterNode",
+      description: "Optional nested Canonical Filter AST for advanced Boolean logic. Do not combine with filters.",
+    };
+  }
 
   const sort = object(canonical.sort, "query.canonical.sort");
   const sortFields = array(sort.fields, "query.canonical.sort.fields").map((field) => string(field, "canonical sort field"));
@@ -202,15 +267,15 @@ function canonicalQueryTool(selection) {
   const limit = object(pagination.limit, "query.canonical.pagination.limit");
   const cursor = object(pagination.cursor, "query.canonical.pagination.cursor");
   if (cursor.opaque !== true) fail("query.canonical cursor must be opaque");
-  schema.properties.page = {
-    type: "object", additionalProperties: false,
-    properties: {
-      limit: {
-        type: "integer", minimum: limit.minimum, maximum: limit.maximum,
-        ...(Number.isInteger(limit.default) ? { default: limit.default } : {}),
-      },
-      cursor: { anyOf: [{ type: "string" }, { type: "null" }] },
-    },
+  schema.properties.limit = {
+    type: "integer", minimum: limit.minimum, maximum: limit.maximum,
+    ...(Number.isInteger(limit.default) ? { default: limit.default } : {}),
+    description: "Maximum records to return.",
+  };
+  schema.properties.cursor = {
+    type: "string",
+    minLength: 1,
+    description: "Opaque pagination cursor from the previous result.",
   };
 
   const name = toolName(["lifespace", "query", string(detail.key, "semantic detail key")]);
@@ -219,7 +284,7 @@ function canonicalQueryTool(selection) {
     tool: {
       name,
       title: `Query ${display.plural}`,
-      description: `Query ${display.plural} through LifeSpace Canonical Typed Query. Search, Filter, Sort and cursor Pagination compose in one request; Core rechecks current authority at execution time.`,
+      description: `Query ${display.plural} through LifeSpace Canonical Query. Keyword Search and typed filters jointly constrain the candidate set; Sort and cursor Pagination apply afterwards. Core rechecks current authority at execution time.`,
       inputSchema: schema,
     },
     binding: {
@@ -269,62 +334,74 @@ function validatePredicateValue(value, label) {
   validateRangeOperand(value, label);
 }
 
-function validateFilter(binding, node, state, depth = 1) {
-  object(node, "filter node");
-  state.nodes += 1;
-  if (state.nodes > binding.filter.maxNodes) fail(`filter exceeds maxNodes ${binding.filter.maxNodes}`);
-  if (depth > binding.filter.maxDepth) fail(`filter exceeds maxDepth ${binding.filter.maxDepth}`);
-  const groupKeys = ["and", "or"].filter((key) => Object.hasOwn(node, key));
-  const isLeaf = Object.hasOwn(node, "field") || Object.hasOwn(node, "op") || Object.hasOwn(node, "value");
-  if (groupKeys.length === 1 && !isLeaf) {
-    exactKeys(node, [groupKeys[0]], "filter group");
-    const children = array(node[groupKeys[0]], `filter.${groupKeys[0]}`);
-    if (!children.length) fail(`filter.${groupKeys[0]} must not be empty`);
-    for (const child of children) validateFilter(binding, child, state, depth + 1);
-    return;
-  }
-  if (groupKeys.length || !isLeaf) fail("filter node must be exactly one AND group, OR group, or predicate");
-  const field = string(node.field, "filter.field");
-  const op = string(node.op, "filter.op");
+function validateCanonicalPredicate(binding, node, label, operatorProperty = "op") {
+  object(node, label);
+  const allowedKeys = operatorProperty === "operator" ? ["field", "operator", "value"] : ["field", "op", "value"];
+  const field = string(node.field, `${label}.field`);
+  const op = string(node[operatorProperty], `${label}.${operatorProperty}`);
   const target = binding.filter.targets[field];
   if (!target) fail(`filter field ${JSON.stringify(field)} was not projected`);
   if (!target.operators.includes(op)) fail(`operator ${JSON.stringify(op)} was not projected for filter field ${JSON.stringify(field)}`);
   if (NULL_OPERATORS.has(op)) {
-    exactKeys(node, ["field", "op"], "null predicate");
+    exactKeys(node, allowedKeys.slice(0, 2), label);
+    return { field, op };
+  }
+  exactKeys(node, allowedKeys, label);
+  if (!Object.hasOwn(node, "value")) fail(`filter predicate ${field}.${op} requires value`);
+  validatePredicateValue(node.value, `${label} ${field}.${op} value`);
+  return { field, op, value: structuredClone(node.value) };
+}
+
+function validateAdvancedFilter(binding, node, state, depth = 1) {
+  object(node, "advancedFilter node");
+  state.nodes += 1;
+  if (state.nodes > binding.filter.maxNodes) fail(`advancedFilter exceeds maxNodes ${binding.filter.maxNodes}`);
+  if (depth > binding.filter.maxDepth) fail(`advancedFilter exceeds maxDepth ${binding.filter.maxDepth}`);
+  const groupKeys = ["and", "or"].filter((key) => Object.hasOwn(node, key));
+  const isLeaf = Object.hasOwn(node, "field") || Object.hasOwn(node, "op") || Object.hasOwn(node, "value");
+  if (groupKeys.length === 1 && !isLeaf) {
+    exactKeys(node, [groupKeys[0]], "advancedFilter group");
+    const children = array(node[groupKeys[0]], `advancedFilter.${groupKeys[0]}`);
+    if (!children.length) fail(`advancedFilter.${groupKeys[0]} must not be empty`);
+    for (const child of children) validateAdvancedFilter(binding, child, state, depth + 1);
     return;
   }
-  exactKeys(node, ["field", "op", "value"], "value predicate");
-  if (!Object.hasOwn(node, "value")) fail(`filter predicate ${field}.${op} requires value`);
-  validatePredicateValue(node.value, `filter ${field}.${op} value`);
+  if (groupKeys.length || !isLeaf) fail("advancedFilter node must be exactly one AND group, OR group, or predicate");
+  validateCanonicalPredicate(binding, node, "advancedFilter predicate", "op");
 }
 
 function validateSearch(binding, value) {
   if (binding.search === null) fail("search was not projected for this model");
-  const search = object(value, "search");
-  exactKeys(search, ["text"], "search");
-  const text = string(search.text, "search.text");
-  if (Number.isInteger(binding.search.minLength) && text.length < binding.search.minLength) fail("search.text is too short");
-  if (Number.isInteger(binding.search.maxLength) && text.length > binding.search.maxLength) fail("search.text is too long");
+  const text = string(value, "search");
+  if (Number.isInteger(binding.search.minLength) && text.length < binding.search.minLength) fail("search is too short");
+  if (Number.isInteger(binding.search.maxLength) && text.length > binding.search.maxLength) fail("search is too long");
+  return text;
+}
+
+function validateSimpleFilters(binding, value) {
+  const filters = array(value, "filters");
+  if (filters.length > binding.filter.maxNodes) fail(`filters exceed maxNodes ${binding.filter.maxNodes}`);
+  return filters.map((entry, index) => validateCanonicalPredicate(binding, entry, `filters[${index}]`, "operator"));
 }
 
 function validateSort(binding, value) {
   const sort = array(value, "sort");
   if (!sort.length || sort.length > binding.sort.maxCriteria) fail(`sort must contain 1-${binding.sort.maxCriteria} criteria`);
+  const used = new Set();
   for (const criterion of sort) {
     object(criterion, "sort criterion");
     exactKeys(criterion, ["field", "direction"], "sort criterion");
     if (!binding.sort.fields.includes(criterion.field)) fail(`sort field ${JSON.stringify(criterion.field)} was not projected`);
     if (!binding.sort.directions.includes(criterion.direction)) fail(`sort direction ${JSON.stringify(criterion.direction)} was not projected`);
+    if (used.has(criterion.field)) fail(`sort field ${JSON.stringify(criterion.field)} may be supplied only once`);
+    used.add(criterion.field);
   }
 }
 
-function validatePage(binding, value) {
-  const page = object(value, "page");
-  exactKeys(page, ["limit", "cursor"], "page");
-  if (page.limit !== undefined && (!Number.isInteger(page.limit) || page.limit < binding.page.minimum || page.limit > binding.page.maximum)) {
-    fail(`page.limit must be an integer from ${binding.page.minimum} to ${binding.page.maximum}`);
+function validateLimit(binding, value) {
+  if (!Number.isInteger(value) || value < binding.page.minimum || value > binding.page.maximum) {
+    fail(`limit must be an integer from ${binding.page.minimum} to ${binding.page.maximum}`);
   }
-  if (page.cursor !== undefined && page.cursor !== null && typeof page.cursor !== "string") fail("page.cursor must be a string or null");
 }
 
 export function buildLifeSpaceQueryRequest(binding, args) {
@@ -333,17 +410,37 @@ export function buildLifeSpaceQueryRequest(binding, args) {
     fail("binding is not a supported Canonical Query binding");
   }
   object(args, "tool arguments");
-  exactKeys(args, ["spaceId", "search", "filter", "sort", "page"], "tool arguments");
+  exactKeys(args, ["spaceId", "search", "filters", "advancedFilter", "sort", "limit", "cursor"], "tool arguments");
   const spaceId = string(args.spaceId, "spaceId");
   if (!binding.allowedSpaceIds.includes(spaceId)) fail(`Space ${JSON.stringify(spaceId)} is not in the projected readable Space set`);
-  if (args.search !== undefined) validateSearch(binding, args.search);
-  if (args.filter !== undefined) validateFilter(binding, args.filter, { nodes: 0 });
-  if (args.sort !== undefined) validateSort(binding, args.sort);
-  if (args.page !== undefined) validatePage(binding, args.page);
-  const body = {};
-  for (const key of ["search", "filter", "sort", "page"]) {
-    if (args[key] !== undefined) body[key] = structuredClone(args[key]);
+  if (args.filters !== undefined && args.advancedFilter !== undefined) {
+    fail("filters and advancedFilter cannot be combined; use advancedFilter for the complete Boolean expression");
   }
+
+  const body = {};
+  if (args.search !== undefined) body.search = { text: validateSearch(binding, args.search) };
+  if (args.filters !== undefined) {
+    const predicates = validateSimpleFilters(binding, args.filters);
+    if (predicates.length === 1) body.filter = predicates[0];
+    if (predicates.length > 1) body.filter = { and: predicates };
+  }
+  if (args.advancedFilter !== undefined) {
+    validateAdvancedFilter(binding, args.advancedFilter, { nodes: 0 });
+    body.filter = structuredClone(args.advancedFilter);
+  }
+  if (args.sort !== undefined) {
+    validateSort(binding, args.sort);
+    body.sort = structuredClone(args.sort);
+  }
+
+  const page = {};
+  if (args.limit !== undefined) {
+    validateLimit(binding, args.limit);
+    page.limit = args.limit;
+  }
+  if (args.cursor !== undefined) page.cursor = string(args.cursor, "cursor");
+  if (Object.keys(page).length) body.page = page;
+
   return {
     method: "POST",
     path: binding.pathTemplate
