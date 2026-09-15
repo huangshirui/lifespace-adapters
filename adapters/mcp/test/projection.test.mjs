@@ -9,7 +9,12 @@ const hashEvent = "b".repeat(64);
 function canonical({ calendar = false } = {}) {
   return {
     invocation: { method: "POST", pathTemplate: "/api/v1/spaces/{spaceId}/models/{modelKey}/records/query" },
-    pipeline: ["search", "filter", "sort", "cursor-pagination"],
+    composition: {
+      selectionFacets: ["search", "filter"],
+      selectionCombine: "intersection",
+      ordering: "sort",
+      pagination: "cursor-pagination",
+    },
     search: { fields: ["summary"], minLength: 1, maxLength: 100 },
     filter: {
       maxDepth: 8,
@@ -114,22 +119,32 @@ test("semantic detail identity drift fails closed", async () => {
   );
 });
 
-test("one model projects one Canonical Query tool even when legacy capability metadata remains", async () => {
+test("one model projects one Agent-friendly Canonical Query tool even when legacy capability metadata remains", async () => {
   const { data } = await selectedEvent();
   const { tools } = projectSelectedModelsToMcp(data);
   assert.deepEqual(tools.map((tool) => tool.name), ["lifespace.query.event"]);
-  assert.ok(tools[0].inputSchema.properties.search);
-  assert.ok(tools[0].inputSchema.properties.filter);
+  assert.equal(tools[0].inputSchema.properties.search.type, "string");
+  assert.ok(tools[0].inputSchema.properties.filters);
+  assert.ok(tools[0].inputSchema.properties.advancedFilter);
   assert.ok(tools[0].inputSchema.properties.sort);
-  assert.ok(tools[0].inputSchema.properties.page);
+  assert.ok(tools[0].inputSchema.properties.limit);
+  assert.ok(tools[0].inputSchema.properties.cursor);
+  assert.equal(tools[0].inputSchema.properties.filter, undefined);
+  assert.equal(tools[0].inputSchema.properties.page, undefined);
   assert.equal(tools[0].inputSchema.properties.q, undefined);
 });
 
-test("filter schema is descriptor-backed and includes Calendar range without a model branch", () => {
+test("flat filter schema is descriptor-backed and includes Calendar range without a model branch", () => {
   const { tools } = projectSelectedModelsToMcp(selection("event"));
-  const targets = tools[0].inputSchema.$defs.filterNode["x-lifespace-targets"];
-  assert.deepEqual(targets.map((target) => target.field), ["createdAt", "dueDate", "status", "when"]);
-  assert.deepEqual(targets.find((target) => target.field === "when").operators, ["overlaps", "contains", "before", "after", "kindIs"]);
+  const branches = tools[0].inputSchema.properties.filters.items.oneOf;
+  const whenOperators = branches
+    .filter((branch) => branch.properties.field.enum[0] === "when")
+    .map((branch) => branch.properties.operator.enum[0]);
+  assert.deepEqual(whenOperators, ["overlaps", "contains", "before", "after", "kindIs"]);
+  assert.deepEqual(
+    tools[0].inputSchema.$defs.advancedFilterNode["x-lifespace-targets"].map((target) => target.field),
+    ["createdAt", "dueDate", "status", "when"],
+  );
 });
 
 test("tool ordering and Space enums are deterministic", () => {
@@ -144,26 +159,56 @@ test("tool ordering and Space enums are deterministic", () => {
   assert.deepEqual(tools[0].inputSchema.properties.spaceId.enum, ["spc_alpha", "spc_beta"]);
 });
 
-test("request builder emits canonical POST path and structured body", () => {
+test("request builder lowers simple Agent inputs into Canonical Query", () => {
   const projected = projectSelectedModelsToMcp(selection());
   const binding = projected.bindings["lifespace.query.task"];
   const args = {
     spaceId: "spc_beta",
-    search: { text: "renew" },
-    filter: {
-      and: [
-        { field: "status", op: "eq", value: "open" },
-        { field: "dueDate", op: "within", value: { kind: "date", start: "2026-09-01", endExclusive: "2026-10-01" } },
-      ],
-    },
+    search: "renew",
+    filters: [
+      { field: "status", operator: "eq", value: "open" },
+      { field: "dueDate", operator: "within", value: { kind: "date", start: "2026-09-01", endExclusive: "2026-10-01" } },
+    ],
     sort: [{ field: "dueDate", direction: "asc" }, { field: "createdAt", direction: "desc" }],
-    page: { limit: 25, cursor: "opaque-token" },
+    limit: 25,
+    cursor: "opaque-token",
   };
   assert.deepEqual(buildLifeSpaceQueryRequest(binding, args), {
     method: "POST",
     path: "/api/v1/spaces/spc_beta/models/task/records/query",
-    body: { search: args.search, filter: args.filter, sort: args.sort, page: args.page },
+    body: {
+      search: { text: "renew" },
+      filter: {
+        and: [
+          { field: "status", op: "eq", value: "open" },
+          { field: "dueDate", op: "within", value: { kind: "date", start: "2026-09-01", endExclusive: "2026-10-01" } },
+        ],
+      },
+      sort: args.sort,
+      page: { limit: 25, cursor: "opaque-token" },
+    },
   });
+});
+
+test("advancedFilter remains available only for nested Boolean logic", () => {
+  const projected = projectSelectedModelsToMcp(selection());
+  const binding = projected.bindings["lifespace.query.task"];
+  const advancedFilter = {
+    or: [
+      { field: "status", op: "eq", value: "open" },
+      { field: "dueDate", op: "isNull" },
+    ],
+  };
+  const request = buildLifeSpaceQueryRequest(binding, { spaceId: "spc_beta", advancedFilter });
+  assert.deepEqual(request.body.filter, advancedFilter);
+  assert.throws(
+    () => buildLifeSpaceQueryRequest(binding, {
+      spaceId: "spc_beta",
+      filters: [{ field: "status", operator: "eq", value: "open" }],
+      advancedFilter,
+    }),
+    /cannot be combined/u,
+  );
 });
 
 test("local date windows are forwarded unchanged for Core DST conversion", () => {
@@ -172,7 +217,7 @@ test("local date windows are forwarded unchanged for Core DST conversion", () =>
   const value = { kind: "local_date_window", startDate: "2026-09-10", endDateExclusive: "2026-09-11", timezone: "Asia/Shanghai" };
   const request = buildLifeSpaceQueryRequest(binding, {
     spaceId: "spc_beta",
-    filter: { field: "createdAt", op: "within", value },
+    filters: [{ field: "createdAt", operator: "within", value }],
   });
   assert.deepEqual(request.body.filter.value, value);
 });
@@ -182,14 +227,16 @@ test("request builder rejects unprojected Space, field, operator and top-level a
   const binding = projected.bindings["lifespace.query.task"];
   assert.throws(() => buildLifeSpaceQueryRequest(binding, { spaceId: "spc_other" }), /not in the projected readable Space set/u);
   assert.throws(() => buildLifeSpaceQueryRequest(binding, { spaceId: "spc_beta", q: "legacy" }), /unsupported property/u);
-  assert.throws(() => buildLifeSpaceQueryRequest(binding, { spaceId: "spc_beta", filter: { field: "unknown", op: "eq", value: "x" } }), /was not projected/u);
-  assert.throws(() => buildLifeSpaceQueryRequest(binding, { spaceId: "spc_beta", filter: { field: "status", op: "gte", value: "x" } }), /was not projected for filter field/u);
+  assert.throws(() => buildLifeSpaceQueryRequest(binding, { spaceId: "spc_beta", filters: [{ field: "unknown", operator: "eq", value: "x" }] }), /was not projected/u);
+  assert.throws(() => buildLifeSpaceQueryRequest(binding, { spaceId: "spc_beta", filters: [{ field: "status", operator: "gte", value: "x" }] }), /was not projected for filter field/u);
 });
 
-test("request builder enforces nested filter and pagination bounds", () => {
+test("request builder enforces null predicate and pagination bounds", () => {
   const projected = projectSelectedModelsToMcp(selection());
   const binding = projected.bindings["lifespace.query.task"];
-  assert.throws(() => buildLifeSpaceQueryRequest(binding, { spaceId: "spc_beta", filter: { and: [] } }), /must not be empty/u);
-  assert.throws(() => buildLifeSpaceQueryRequest(binding, { spaceId: "spc_beta", filter: { field: "dueDate", op: "isNull", value: null } }), /unsupported property/u);
-  assert.throws(() => buildLifeSpaceQueryRequest(binding, { spaceId: "spc_beta", page: { limit: 201 } }), /must be an integer/u);
+  assert.throws(
+    () => buildLifeSpaceQueryRequest(binding, { spaceId: "spc_beta", filters: [{ field: "dueDate", operator: "isNull", value: null }] }),
+    /unsupported property/u,
+  );
+  assert.throws(() => buildLifeSpaceQueryRequest(binding, { spaceId: "spc_beta", limit: 201 }), /must be an integer/u);
 });
