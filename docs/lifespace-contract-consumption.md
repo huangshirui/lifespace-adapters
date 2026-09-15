@@ -19,6 +19,7 @@ The owning repository is [`huangshirui/LifeSpace`](https://github.com/huangshiru
 | Agent execution / Delegation semantics | `docs/agent-ready.md` |
 | Ordinary model schema/action syntax | immutable generated `mct_*` Model Contract Revision |
 | Model Definition / Policy / Capability semantics | `docs/model-definition-spec.md` + published Registry/contract evidence |
+| Canonical Query semantics | `docs/canonical-query.md` + generated `query.canonical` semantic detail |
 | Verified behavior | LifeSpace automated tests |
 
 Do not copy these into this repository as editable canonical definitions.
@@ -27,14 +28,17 @@ Do not copy these into this repository as editable canonical definitions.
 
 At repository bootstrap on **2026-09-05**, the observed LifeSpace baseline was Identity Application Contract `0.6.0` and Core Kernel `0.23.0`. Those numbers remain historical evidence only.
 
-The current MCP query Projection Core alignment target is **Core Kernel `0.36.0`**. Relevant evolution includes:
+The MCP query Projection Core originally aligned to the first `query.canonical` descriptor shipped around Core Kernel `0.36.0`. The current alignment target is the **current Canonical Query descriptor** after the composition correction represented by LifeSpace PR #242:
 
-- `0.33.0`: canonical structural `timeRanges` in progressive semantic detail;
-- `0.34.0`: explicit comparison semantics, envelope timestamps and local-date windows;
-- `0.35.0`: grouped capability-query compatibility metadata;
-- `0.36.0`: `query.canonical` publishes one composable Search / Filter / Sort / cursor Pagination contract and the canonical model Query POST invocation.
+- Canonical invocation is `POST /api/v1/spaces/{spaceId}/models/{modelKey}/records/query`;
+- Search and Filter are parallel candidate-selection facets combined by intersection;
+- Sort applies after candidate selection;
+- Pagination uses the opaque cursor contract;
+- typed filter targets/operators and temporal range operands remain owned by LifeSpace.
 
-`modelKey` is the sole ordinary-model Runtime address and canonical execution paths are `/api/v1/spaces/{spaceId}/models/{modelKey}/records/...`.
+The adapter does not infer a Kernel version number for this semantic correction. It consumes the descriptor shape actually published by the compatible LifeSpace deployment and fails closed when required semantics are missing or unsupported.
+
+`modelKey` remains the sole ordinary-model Runtime address and canonical execution paths are `/api/v1/spaces/{spaceId}/models/{modelKey}/records/...`.
 
 This repository does not silently follow every future Kernel revision. A future incompatible representation must be intentionally reviewed and covered by adapter tests before it becomes a declared compatibility target.
 
@@ -61,27 +65,53 @@ GET /api/v1/me/_discovery
 GET /api/v1/spaces/{spaceId}/_discovery
 ```
 
-They are compatibility/fallback inputs, not the universal MCP `tools/list` source.
+They are fallback inputs, not the universal MCP `tools/list` source.
 
 All Runtime Discovery responses are evaluated by LifeSpace using current authority state. The adapter must consume this projection rather than enumerate all published models or independently merge `/me/spaces` into an authorization result.
 
 Runtime Discovery is not execution authorization. Revoked Membership, Grant, Delegation or Application access must still be denied by the subsequent canonical LifeSpace call even if a client holds stale discovery state.
 
-A caller that already has an authorized `spaceId + modelKey` does not need Discovery merely to translate a model into another Runtime address. Discovery remains for capability projection and semantic selection, not route lookup.
-
 ## Canonical Query and Time Semantics（统一查询与时间语义）
 
-For Core Kernel `0.36.0`, MCP query projection consumes `query.canonical` rather than reconstructing transport parameters:
+MCP query projection consumes `query.canonical` rather than reconstructing legacy transport parameters.
 
-- `invocation` must publish the canonical `POST /api/v1/spaces/{spaceId}/models/{modelKey}/records/query` operation;
-- `search` determines whether the structured `{ text }` input is exposed and publishes its bounds;
-- `filter.targets` publishes fields, semantic kinds, value types, allowed operators, nullability and any current-actor `me` alias;
-- recursive `and` / `or` groups and predicates are carried as a structured Filter AST;
-- `local_date_window`, `date` and `instant` ranges are forwarded unchanged; Core alone owns IANA-timezone and DST conversion;
-- `sort` publishes fields, directions, maximum criteria, NULL-last behavior and stable tie-breaking;
-- `pagination` publishes bounded limit and opaque cursor behavior.
+Required semantic inputs are:
 
-Every selected readable model emits one MCP Query Tool. Compatibility fields such as `query.filters`, `query.comparisons`, and `query.capabilityQueries` do not generate Generic/Capability parallel tools. Unknown or missing canonical invocation, pipeline, field, operator or value shape fails closed.
+- `invocation`: the canonical structured POST query operation;
+- `composition`: Search + Filter candidate selection by intersection, followed by Sort and cursor Pagination;
+- `search`: whether keyword Search exists and its bounds;
+- `filter.targets`: fields, semantic kinds, value types, allowed operators, nullability and any current-actor aliases;
+- `sort`: fields, directions, maximum criteria, NULL-last behavior and stable tie-breaking;
+- `pagination`: bounded limit and opaque cursor behavior.
+
+The protocol projection is intentionally smaller than the Core contract:
+
+```text
+MCP Agent input
+  search: string
+  filters[]: simple typed predicates combined with AND
+  sort[]
+  limit
+  cursor
+  advancedFilter: optional nested Canonical Filter AST
+        ↓ deterministic lowering
+LifeSpace Canonical Query
+  search: { text }
+  filter: Predicate | AND/OR AST
+  sort
+  page
+```
+
+Rules:
+
+- `filters[]` and `advancedFilter` are mutually exclusive;
+- multiple simple filters compile to `{ and: [...] }`;
+- `advancedFilter` is reserved for genuinely nested Boolean logic and is not the default Agent schema;
+- `local_date_window`, `date` and `instant` range operands are forwarded unchanged; Core alone owns IANA-timezone and DST conversion;
+- adapters do not expose Standard Query / Capability Query modes;
+- legacy `query.filters`, `query.comparisons`, and `query.capabilityQueries` do not create parallel MCP tools.
+
+This protocol simplification is not a second semantic query language. Every accepted MCP argument deterministically maps to the same Canonical Query contract owned by LifeSpace.
 
 ## Ordinary Model Contract Revisions（普通模型契约修订）
 
@@ -95,7 +125,7 @@ Adapter rules:
 - do not use environment-local Registry version numbers as global semantic identity;
 - preserve model `key`, `schemaHash` and contract metadata needed to prove compatibility;
 - execute ordinary model operations through `/api/v1/spaces/{spaceId}/models/{modelKey}/records/...` rather than maintaining a modelKey-to-route translation table;
-- treat any pre-#200 `route` found in historical immutable evidence only as historical representation, never as current Model identity;
+- treat historical `route` values only as historical representation, never as current Model identity;
 - do not emit or depend on LifeSpace Core's fixed legacy compatibility aliases in new adapter configuration.
 
 ## Kernel vs Platform Admin（内核与平台管理）
@@ -109,14 +139,14 @@ A protocol adapter must never discover or expose platform-admin operations just 
 Each implemented adapter slice must declare:
 
 1. minimum/supported Identity Application Contract version if Identity endpoints are consumed directly;
-2. minimum/supported Core Kernel Contract version;
+2. required Core semantic/contract features;
 3. required Runtime Discovery features;
 4. Model Contract features/annotations it can safely project;
 5. explicit behavior when an upstream contract is newer or unsupported.
 
 Prefer **fail closed（失败关闭）** for semantics the protocol adapter cannot safely represent. Hiding or narrowing an unsupported operation is safer than emitting a tool whose input/authorization/concurrency semantics are wrong.
 
-Do not silently guess around unknown contract fields or strip security-relevant metadata.
+The current MCP query adapter has no production compatibility obligation to the earlier recursive-filter Tool schema or legacy Capability Query surface. It cuts directly to the accepted Agent-friendly projection and rejects unsupported descriptor shapes rather than maintaining parallel modes.
 
 ## Testing contract assumptions（契约假设测试）
 
@@ -125,7 +155,7 @@ Tests in this repository must prove adapter behavior against explicit upstream c
 Acceptable approaches include:
 
 - minimal Synthetic Fixtures（合成夹具） that exercise a documented contract shape;
-- generated fixtures pinned to an explicit public LifeSpace contract version/revision with provenance;
+- generated fixtures pinned to an explicit public LifeSpace contract/revision with provenance;
 - integration tests against a dedicated test/staging environment when credentials are injected securely.
 
-The MCP M0 fixtures are synthetic and model Core Kernel `0.36.0` progressive inventory/detail plus Canonical Typed Query semantics. A fixture is test evidence, not a new canonical contract. If fixture and LifeSpace disagree, LifeSpace wins and the adapter must be updated.
+The MCP fixtures are synthetic and model the current Progressive Discovery + Canonical Query composition semantics. A fixture is test evidence, not a new canonical contract. If fixture and LifeSpace disagree, LifeSpace wins and the adapter must be updated.
