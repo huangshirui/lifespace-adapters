@@ -19,7 +19,7 @@ The first adapter is MCP（Model Context Protocol，模型上下文协议）.
 The following remain authoritative in [`huangshirui/LifeSpace`](https://github.com/huangshirui/LifeSpace):
 
 - Identity（身份）;
-- Space / Membership / Data Grant（空间 / 成员关系 / 数据授权）;
+- Space / Membership / Data Grant（空间 / 成员 / 数据授权）;
 - Principal / Actor / Application Context（权限主体 / 执行者 / 应用上下文）;
 - Agent Delegation（Agent 委托）;
 - Shared Reality（共享现实） domain models;
@@ -81,13 +81,15 @@ The repository is moving from **contract alignment** into the first verified ada
 - Repository boundary: defined.
 - Public-repository safety baseline: defined.
 - Canonical LifeSpace contract-consumption rules: defined.
-- MCP Canonical Query Projection Core: **implemented and tested** against synthetic LifeSpace Core Kernel `0.36.0` semantic fixtures.
+- MCP Canonical Query Projection Core: **implemented and tested** against synthetic current Canonical Query semantic fixtures.
 - MCP Server / transport / OAuth integration: **not implemented yet**.
 - Deployment runtime: **not selected yet**.
 
-The implemented M0 projection covers Progressive Discovery loading, exactly one Canonical Query Tool per selected model, descriptor-backed Search / nested typed Filter / ordered Sort / cursor Pagination, time-range and local-date-window operands, Space-scoped execution bindings and canonical modelKey-addressed POST request construction. Legacy Generic/Capability query metadata does not create a second MCP surface.
+The implemented projection covers Progressive Discovery loading, exactly one Canonical Query Tool per selected model, an Agent-friendly default schema (`search`, flat typed `filters[]`, ordered `sort[]`, `limit`, `cursor`), optional `advancedFilter` for nested Boolean expressions, typed temporal/range operands, Space-scoped execution bindings and canonical modelKey-addressed POST request construction.
 
-The next milestone is to bind this verified projection core to an actual MCP `2026-07-28` server/transport without changing the LifeSpace-owned semantic or authorization boundary.
+Search and Filter are projected as parallel candidate-selection facets and compile to the same Canonical Query. Legacy Generic/Capability query metadata does not create a second MCP surface and is not preserved as an adapter compatibility mode.
+
+The next milestone is to bind this verified projection core to an actual MCP server/transport without changing the LifeSpace-owned semantic or authorization boundary.
 
 ## Documentation（文档）
 

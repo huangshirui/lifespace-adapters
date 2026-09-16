@@ -5,7 +5,12 @@ import { buildLifeSpaceQueryRequest, projectSelectedModelsToMcp } from "../src/p
 function canonical() {
   return {
     invocation: { method: "POST", pathTemplate: "/api/v1/spaces/{spaceId}/models/{modelKey}/records/query" },
-    pipeline: ["search", "filter", "sort", "cursor-pagination"],
+    composition: {
+      selectionFacets: ["search", "filter"],
+      selectionCombine: "intersection",
+      ordering: "sort",
+      pagination: "cursor-pagination",
+    },
     search: null,
     filter: {
       maxDepth: 2,
@@ -38,13 +43,18 @@ test("missing Canonical Query metadata fails closed", () => {
   assert.throws(() => projectSelectedModelsToMcp(selected), /query\.canonical must be an object/u);
 });
 
-test("unknown invocation and pipeline fail closed", () => {
+test("unknown invocation and composition fail closed", () => {
   const get = canonical();
   get.invocation.method = "GET";
   assert.throws(() => projectSelectedModelsToMcp(selection(get)), /invocation is unsupported/u);
+
   const reordered = canonical();
-  reordered.pipeline = ["filter", "search", "sort", "cursor-pagination"];
-  assert.throws(() => projectSelectedModelsToMcp(selection(reordered)), /pipeline is unsupported/u);
+  reordered.composition.selectionFacets = ["filter", "search"];
+  assert.throws(() => projectSelectedModelsToMcp(selection(reordered)), /composition is unsupported/u);
+
+  const sequential = canonical();
+  sequential.composition.selectionCombine = "sequence";
+  assert.throws(() => projectSelectedModelsToMcp(selection(sequential)), /composition is unsupported/u);
 });
 
 test("duplicate filter targets fail closed", () => {
@@ -53,20 +63,20 @@ test("duplicate filter targets fail closed", () => {
   assert.throws(() => projectSelectedModelsToMcp(selection(value)), /duplicate canonical filter target/u);
 });
 
-test("request builder rechecks filter depth and node bounds", () => {
+test("advancedFilter rechecks depth and node bounds", () => {
   const projected = projectSelectedModelsToMcp(selection());
   const binding = projected.bindings["lifespace.query.synthetic"];
   assert.throws(
     () => buildLifeSpaceQueryRequest(binding, {
       spaceId: "spc_test",
-      filter: { and: [{ or: [{ field: "createdAt", op: "eq", value: "2026-09-01T00:00:00Z" }] }] },
+      advancedFilter: { and: [{ or: [{ field: "createdAt", op: "eq", value: "2026-09-01T00:00:00Z" }] }] },
     }),
     /exceeds maxDepth/u,
   );
   assert.throws(
     () => buildLifeSpaceQueryRequest(binding, {
       spaceId: "spc_test",
-      filter: { and: [
+      advancedFilter: { and: [
         { field: "createdAt", op: "eq", value: "a" },
         { field: "createdAt", op: "eq", value: "b" },
         { field: "createdAt", op: "eq", value: "c" },
@@ -82,7 +92,7 @@ test("malformed range operands fail closed rather than being normalized locally"
   assert.throws(
     () => buildLifeSpaceQueryRequest(binding, {
       spaceId: "spc_test",
-      filter: { field: "createdAt", op: "within", value: { kind: "local_date_window", startDate: "2026-09-01" } },
+      filters: [{ field: "createdAt", operator: "within", value: { kind: "local_date_window", startDate: "2026-09-01" } }],
     }),
     /endDateExclusive/u,
   );

@@ -13,7 +13,9 @@ select visible model keys
         ↓
 GET /api/v1/spaces/{spaceId}/_discovery/models/{modelKey}
         ↓
-one MCP Canonical Query Tool per model + execution binding
+one Agent-friendly MCP Query Tool per model + execution binding
+        ↓
+compile simple Agent arguments to LifeSpace Canonical Query
         ↓
 POST /api/v1/spaces/{spaceId}/models/{modelKey}/records/query
 ```
@@ -21,9 +23,23 @@ POST /api/v1/spaces/{spaceId}/models/{modelKey}/records/query
 Files:
 
 - `src/progressive-discovery.mjs` loads compact inventory plus only selected semantic details and fails closed when `key/version/schemaHash` drift;
-- `src/projection.mjs` projects `query.canonical` into one MCP Tool per selected model and builds Canonical Query POST requests;
-- `test/projection.test.mjs` proves Progressive Discovery bounds, descriptor-backed Search/Filter/Sort/Pagination, range forwarding and Space isolation;
+- `src/projection.mjs` projects `query.canonical` into one smaller MCP Tool per selected model and builds Canonical Query POST requests;
+- `test/projection.test.mjs` proves Progressive Discovery bounds, Agent-friendly Search/filters/Sort/Pagination, optional `advancedFilter`, range forwarding and Space isolation;
 - `test/projection-fail-closed.test.mjs` proves unsupported or stale semantics are rejected.
+
+The default Query Tool surface is:
+
+```text
+spaceId
+search?
+filters[]?        simple typed predicates; AND by default
+sort[]?
+limit?
+cursor?
+advancedFilter?  nested Canonical Boolean AST only when needed
+```
+
+`filters[]` and `advancedFilter` are mutually exclusive. Both compile into the same LifeSpace-owned Canonical Filter semantics; there is no MCP Standard Query / Capability Query mode.
 
 The adapter must:
 
@@ -34,7 +50,7 @@ The adapter must:
 - fail closed when LifeSpace contract semantics cannot be represented safely;
 - never expose Platform Admin（平台管理） control-plane operations through ordinary Agent discovery.
 
-The M0 projection targets LifeSpace Core Kernel `0.36.0` Canonical Typed Query and the MCP `2026-07-28` Tool schema model. Legacy `query.filters`, `query.comparisons`, and `query.capabilityQueries` may remain in compatibility Discovery, but they do not generate a second MCP query surface.
+The projection consumes the current LifeSpace Canonical Query semantic descriptor, including Search + Filter intersection semantics, typed filter targets/operators, ordered Sort and cursor Pagination. Legacy query metadata does not generate a second MCP query surface and is not maintained as a compatibility mode.
 
 It deliberately does **not** choose an MCP SDK, HTTP transport, OAuth profile or deployment runtime.
 
