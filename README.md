@@ -111,3 +111,7 @@ See [`LICENSE`](LICENSE) for the full license text.
 This is a Public Repository（公开仓库）. Do not commit real user data, credentials, production/staging payloads, private infrastructure metadata, or non-public connector/tool output.
 
 Sensitive vulnerabilities must not be reported through public Issue / PR content. See [`SECURITY.md`](SECURITY.md) and [`AGENTS.md`](AGENTS.md).
+
+## Provider adapters / 外部数据适配器
+
+`adapters/notion` consumes LifeSpace External Adapter contract v1 and projects Notion data-source schema/records into the Core-owned compatible model. It owns Provider API/Secret/query/rate-limit behavior, has no LifeSpace D1/ACL, and is separate from outward-facing MCP projection. See `adapters/notion/README.md`. Tests use synthetic data; no deployment is claimed.

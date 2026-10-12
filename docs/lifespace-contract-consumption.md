@@ -159,3 +159,7 @@ Acceptable approaches include:
 - integration tests against a dedicated test/staging environment when credentials are injected securely.
 
 The MCP fixtures are synthetic and model the current Progressive Discovery + Canonical Query composition semantics. A fixture is test evidence, not a new canonical contract. If fixture and LifeSpace disagree, LifeSpace wins and the adapter must be updated.
+
+## External Model Adapter v1 / 外部模型适配器
+
+The provider-facing Notion adapter explicitly consumes LifeSpace `apps/core/external-adapter.contract.json` version 1 and the boundaries in `docs/external-models.md`. Provider field codecs/schema/query translation remain adapter-owned. Core consumes only the compatible projection. This contract is independent from Native immutable mct revisions. Current MCP projection assumes Native ordering/version invariants and fails closed for External descriptors; enabling External MCP tools requires an intentional dynamic-contract projection, not a fabricated Native version or sort guarantee.
