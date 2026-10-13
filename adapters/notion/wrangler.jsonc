@@ -1,7 +1,11 @@
 {
- "name": "lifespace-notion-adapter",
+ "name": "example-notion-provider-local",
  "main": "src/worker.mjs",
  "compatibility_date": "2026-07-02",
  "workers_dev": false,
- "preview_urls": false
+ "preview_urls": false,
+ "env": {
+  "staging": { "name": "example-notion-provider-staging", "workers_dev": false, "preview_urls": false, "routes": [] },
+  "production": { "name": "example-notion-provider-production", "workers_dev": false, "preview_urls": false, "routes": [] }
+ }
 }

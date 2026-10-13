@@ -27,4 +27,10 @@ Per-isolate pacing is 350ms per connection, pending queue <=50. Provider 429 use
 
 Run `node --test adapters/notion/test/*.test.mjs` and the existing MCP tests. Real provider SLO/staging acceptance needs injected deployment configuration and synthetic Notion resources.
 
+## Deployment profiles / 部署环境
+
+The checked-in `staging` and `production` Wrangler profiles are private packaging templates, with deliberately synthetic Worker names and no public routes. The owning deployment must supply its environment-local Worker name through `--name`; never copy live account identifiers, Worker names, connections or tokens into this public repository. Select `--env staging` or `--env production` explicitly. Secrets are not inherited between environments.
+
+Deploy an immutable reviewed adapter commit before deploying its Core Service Binding. Inject `EXTERNAL_ADAPTER_SHARED_SECRET` and `NOTION_CONNECTIONS` with `wrangler secret bulk` over stdin in the same selected environment and Worker name. Core receives only the independent shared secret; Notion tokens remain exclusively in this Worker. Deployment must synchronize matching secrets, reject cross-environment names and verify an authenticated connection/discovery through Core. A successful Worker upload alone is not provider acceptance. Rotation requires updating the matching Core and Adapter secrets together; do not retry an uncertain provider write.
+
 Official protocol references: [retrieve data source](https://developers.notion.com/reference/retrieve-a-data-source), [query](https://developers.notion.com/reference/query-a-data-source), [typed filters and timestamp/status semantics](https://developers.notion.com/reference/filter-data-source-entries), [request limits](https://developers.notion.com/reference/request-limits).
