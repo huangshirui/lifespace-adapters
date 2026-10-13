@@ -123,7 +123,7 @@ function predicateValueSchema(target, operator) {
 function flatFilterBranches(canonical) {
   const filter = object(canonical.filter, "query.canonical.filter");
   const targets = array(filter.targets, "query.canonical.filter.targets");
-  if (!targets.length) fail("query.canonical.filter.targets must not be empty");
+  if (!targets.length && canonical.search !== null) fail("query.canonical.filter.targets must not be empty");
   const branches = [];
   for (const target of targets) {
     const field = string(target.field, "canonical filter target field");
@@ -147,7 +147,7 @@ function flatFilterBranches(canonical) {
 function advancedFilterSchema(canonical) {
   const filter = object(canonical.filter, "query.canonical.filter");
   const targets = array(filter.targets, "query.canonical.filter.targets");
-  if (!targets.length) fail("query.canonical.filter.targets must not be empty");
+  if (!targets.length && canonical.search !== null) fail("query.canonical.filter.targets must not be empty");
   const fields = [];
   const operators = new Set();
   for (const target of targets) {
@@ -278,7 +278,7 @@ function canonicalQueryTool(selection) {
     description: "Opaque pagination cursor from the previous result.",
   };
 
-  const name = toolName(["lifespace", "query", string(detail.key, "semantic detail key")]);
+  const name = toolName(["lifespace", "query", string(detail.key, "semantic detail key"), ...(detail.origin === "external" ? [string(detail.spaceId, "external Space identity")] : [])]);
   const display = object(detail.display, "semantic detail display");
   return {
     tool: {

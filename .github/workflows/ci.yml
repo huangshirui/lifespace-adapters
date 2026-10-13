@@ -100,3 +100,17 @@ jobs:
           -v "$GITHUB_WORKSPACE:/repo"
           ghcr.io/gitleaks/gitleaks:v8.29.1@sha256:aa036a2f4bdfe3cc3c55fa4326308efabb4a6be498c883c864fd1d0d5585438a
           git --redact --no-banner /repo
+
+  notion-provider:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Syntax check Notion provider adapter
+        run: |
+          node --check adapters/notion/src/provider.mjs
+          node --check adapters/notion/src/worker.mjs
+      - name: Test Notion provider contract and safety boundaries
+        run: node --test adapters/notion/test/*.test.mjs

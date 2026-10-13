@@ -189,3 +189,7 @@ There is intentionally no `domain/` package, platform migration layer or duplica
 `lifespace-n8n-nodes` remains a separate Platform Integration（平台集成） repository. n8n node UX and credential integration have a different lifecycle from protocol adapters and should not be moved here simply for consolidation.
 
 Applications such as ALOHA and HomeMew consume LifeSpace/adapter capabilities under their own Application Context and do not become submodules of this repository.
+
+## Provider-facing direction / 面向数据源的适配方向
+
+#340 adds `adapters/notion` as a provider-facing adapter: Core authorizes first, calls a fixed private service boundary, and the adapter executes only the provider operation. It consumes the LifeSpace-owned external-adapter contract v1; it never enumerates LifeSpace users, reads D1, creates Grants or defines model semantics. Provider native schema is projected to supported canonical fields only. This is the reverse transport direction from outward-facing MCP, while retaining the same pure-adapter ownership rule.

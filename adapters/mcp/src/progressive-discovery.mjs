@@ -31,7 +31,8 @@ function detailPath(template, spaceId, modelKey) {
 }
 
 function sameIdentity(inventoryModel, detail) {
-  return detail.key === inventoryModel.key
+  return (inventoryModel.origin !== "external" || (detail.origin === "external" && detail.spaceId === inventoryModel.spaceId))
+    && detail.key === inventoryModel.key
     && detail.version === inventoryModel.version
     && detail.schemaHash === inventoryModel.schemaHash;
 }
@@ -45,16 +46,16 @@ export async function loadSelectedModelSemantics({ fetchJson, selectedModelKeys 
 
   const models = [];
   for (const modelKey of selected) {
-    const inventoryModel = inventory.models.find((model) => model.key === modelKey);
-    if (!inventoryModel) fail(`selected model ${JSON.stringify(modelKey)} is not visible in inventory`);
-    const spaces = readableSpacesForModel(inventory, modelKey);
-    if (!spaces.length) fail(`selected model ${JSON.stringify(modelKey)} has no readable Space`);
-    const path = detailPath(inventory.semanticDetailPathTemplate, spaces[0].spaceId, modelKey);
-    const detail = unwrap(await fetchJson(path), `semantic detail response for ${modelKey}`);
-    if (!sameIdentity(inventoryModel, detail)) {
-      fail(`semantic detail identity drift for ${modelKey}; refresh inventory before projecting tools`);
+    const entries = inventory.models.filter(model => model.key === modelKey);
+    if (!entries.length) fail(`selected model ${JSON.stringify(modelKey)} is not visible in inventory`);
+    for (const inventoryModel of entries) {
+      const spaces = readableSpacesForModel(inventory, modelKey).filter(space => inventoryModel.origin !== "external" || space.spaceId === inventoryModel.spaceId);
+      if (!spaces.length) fail(`selected model ${JSON.stringify(modelKey)} has no readable Space`);
+      const path = detailPath(inventory.semanticDetailPathTemplate, spaces[0].spaceId, modelKey);
+      const detail = unwrap(await fetchJson(path), `semantic detail response for ${modelKey}`);
+      if (!sameIdentity(inventoryModel, detail)) fail(`semantic detail identity drift for ${modelKey}; refresh inventory before projecting tools`);
+      models.push({ inventoryModel, detail, spaces });
     }
-    models.push({ inventoryModel, detail, spaces });
   }
   return { inventory, models };
 }
