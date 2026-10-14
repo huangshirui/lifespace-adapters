@@ -4,8 +4,26 @@
  "compatibility_date": "2026-07-02",
  "workers_dev": false,
  "preview_urls": false,
+ "durable_objects": {
+  "bindings": [{ "name": "CONNECTIONS", "class_name": "NotionConnectionVault" }]
+ },
+ "migrations": [
+  { "tag": "v1-dynamic-connections", "new_sqlite_classes": ["NotionConnectionVault"] }
+ ],
  "env": {
-  "staging": { "name": "example-notion-provider-staging", "workers_dev": false, "preview_urls": false, "routes": [] },
-  "production": { "name": "example-notion-provider-production", "workers_dev": false, "preview_urls": false, "routes": [] }
+  "staging": {
+   "name": "example-notion-provider-staging",
+   "workers_dev": false,
+   "preview_urls": false,
+   "routes": [],
+   "durable_objects": { "bindings": [{ "name": "CONNECTIONS", "class_name": "NotionConnectionVault" }] }
+  },
+  "production": {
+   "name": "example-notion-provider-production",
+   "workers_dev": false,
+   "preview_urls": false,
+   "routes": [],
+   "durable_objects": { "bindings": [{ "name": "CONNECTIONS", "class_name": "NotionConnectionVault" }] }
+  }
  }
 }
