@@ -72,13 +72,14 @@ export function createWorker(provider = createNotionProvider()) {
         const text = await request.text();
         if (text.length > 256000) throw new ProviderError("EXTERNAL_VALIDATION_FAILED", 422, true);
         const body = JSON.parse(text);
-        if (!body || typeof body !== "object" || Array.isArray(body) || body.contractVersion !== 1 || body.providerKey !== "notion") {
+        if (!body || typeof body !== "object" || Array.isArray(body) || body.contractVersion !== 1) {
           throw new ProviderError("EXTERNAL_CONTRACT_INVALID", 502, true);
         }
+        if (url.pathname === "/internal/v1/external-connections" && body.operation === "describe") {
+          return Response.json({ contractVersion: 1, data: providerDescriptor });
+        }
+        if (body.providerKey !== "notion") throw new ProviderError("EXTERNAL_CONTRACT_INVALID", 502, true);
         if (url.pathname === "/internal/v1/external-connections") {
-          if (body.operation === "describe") {
-            return Response.json({ contractVersion: 1, data: providerDescriptor });
-          }
           if (!dynamicRef(body.credentialRef)) throw new ProviderError("EXTERNAL_VALIDATION_FAILED", 422, true);
           const data = await callVault(env, body.credentialRef, {
             operation: body.operation,
