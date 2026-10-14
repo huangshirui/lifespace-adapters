@@ -165,21 +165,17 @@ export class NotionConnectionVault {
     this.state = state;
     this.env = env;
     this.provider = createNotionProvider();
-    this.cachedConnection = undefined;
   }
 
   async persist(connection) {
     const envelope = await encryptConnection(connection, this.env?.CONNECTION_VAULT_MASTER_KEY);
     await this.state.storage.put(CONFIG_KEY, envelope);
-    this.cachedConnection = connection;
   }
 
   async load() {
-    if (this.cachedConnection) return this.cachedConnection;
     const stored = await this.state.storage.get(CONFIG_KEY);
     if (encryptedEnvelope(stored)) {
-      this.cachedConnection = await decryptConnection(stored, this.env?.CONNECTION_VAULT_MASTER_KEY);
-      return this.cachedConnection;
+      return decryptConnection(stored, this.env?.CONNECTION_VAULT_MASTER_KEY);
     }
     // One-way lazy migration from the pre-encryption format. The plaintext is
     // accepted only when it exactly matches the legacy connection projection,
@@ -224,7 +220,6 @@ export class NotionConnectionVault {
       }
       if (body.operation === "delete") {
         await this.state.storage.deleteAll();
-        this.cachedConnection = undefined;
         return Response.json({ data: { deleted: true } });
       }
       const connection = await this.load();
