@@ -87,6 +87,21 @@ test("Durable Object encrypts dynamic credential at rest and never returns plain
   assert.equal(storage.size, 0);
 });
 
+test("decrypted credential is not cached across Durable Object requests", async () => {
+  const { storage, state } = memoryState();
+  const vault = new NotionConnectionVault(state, vaultEnv);
+  await withFetch(async () => Response.json({ object: "user", id: "bot" }), async () => {
+    const configured = await vault.fetch(request({ operation: "create", credential: { type: "bearer_token", token: connection.token }, access: "read" }));
+    assert.equal(configured.status, 200);
+  });
+  const encrypted = storage.get("connection");
+  const replacement = encrypted.ciphertext.startsWith("A") ? "B" : "A";
+  storage.set("connection", { ...encrypted, ciphertext: `${replacement}${encrypted.ciphertext.slice(1)}` });
+  const response = await vault.fetch(request({ operation: "execute", request: { contractVersion: 1, providerKey: "notion", credentialRef: "cnx_" + "d".repeat(32), operation: "connection", resourceId: "connection" } }));
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: { code: "EXTERNAL_UNAVAILABLE", retrySafe: false } });
+});
+
 test("legacy plaintext Durable Object state is lazily migrated to AES-GCM before continuing", async () => {
   const { storage, state } = memoryState({ ...connection });
   const vault = new NotionConnectionVault(state, vaultEnv);
