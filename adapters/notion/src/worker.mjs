@@ -41,7 +41,8 @@ function errorResponse(code, status, retrySafe = false) {
 }
 
 async function callVault(env, ref, body) {
-  if (!env.CONNECTIONS || !dynamicRef(ref)) return null;
+  if (!dynamicRef(ref)) throw new ProviderError("EXTERNAL_VALIDATION_FAILED", 422, true);
+  if (!env.CONNECTIONS) throw new ProviderError("EXTERNAL_UNAVAILABLE", 503, true);
   const id = env.CONNECTIONS.idFromName(ref);
   const stub = env.CONNECTIONS.get(id);
   const response = await stub.fetch("https://connection-vault.internal/", {
@@ -80,7 +81,6 @@ export function createWorker(provider = createNotionProvider()) {
         }
         if (body.providerKey !== "notion") throw new ProviderError("EXTERNAL_CONTRACT_INVALID", 502, true);
         if (url.pathname === "/internal/v1/external-connections") {
-          if (!dynamicRef(body.credentialRef)) throw new ProviderError("EXTERNAL_VALIDATION_FAILED", 422, true);
           const data = await callVault(env, body.credentialRef, {
             operation: body.operation,
             ...(body.credential === undefined ? {} : { credential: body.credential }),
