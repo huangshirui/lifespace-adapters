@@ -102,14 +102,19 @@ export class NotionConnectionVault {
   constructor(state) {
     this.state = state;
     this.provider = createNotionProvider();
+    this.cachedConnection = undefined;
   }
 
   async load() {
+    if (this.cachedConnection) return this.cachedConnection;
     const value = await this.state.storage.get(CONFIG_KEY);
     if (!object(value) || !validToken(value.token) || value.read !== true || typeof value.write !== "boolean") {
       throw new ProviderError("EXTERNAL_ACCESS_DENIED", 503, true);
     }
-    return value;
+    // Keep the same object identity while this Durable Object instance is warm so
+    // provider pacing/circuit state remains connection-scoped across requests.
+    this.cachedConnection = value;
+    return this.cachedConnection;
   }
 
   async fetch(request) {
@@ -126,6 +131,7 @@ export class NotionConnectionVault {
         const connection = { token: body.credential.token, ...access };
         await validateConnectionCredential(connection);
         await this.state.storage.put(CONFIG_KEY, connection);
+        this.cachedConnection = connection;
         return Response.json({ data: { read: true, write: connection.write } });
       }
       if (body.operation === "update") {
@@ -140,10 +146,12 @@ export class NotionConnectionVault {
         }
         if (body.credential !== undefined) await validateConnectionCredential(next);
         await this.state.storage.put(CONFIG_KEY, next);
+        this.cachedConnection = next;
         return Response.json({ data: { read: true, write: next.write } });
       }
       if (body.operation === "delete") {
         await this.state.storage.deleteAll();
+        this.cachedConnection = undefined;
         return Response.json({ data: { deleted: true } });
       }
       const connection = await this.load();
