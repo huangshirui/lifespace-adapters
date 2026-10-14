@@ -92,10 +92,7 @@ export async function listConnectionResources(connection, input = {}) {
       type: "data_source",
       displayName: title(entry.title) || "Untitled data source",
     }));
-  return {
-    items,
-    nextCursor: raw.has_more === true && typeof raw.next_cursor === "string" ? raw.next_cursor : null,
-  };
+  return { items, nextCursor: raw.has_more === true && typeof raw.next_cursor === "string" ? raw.next_cursor : null };
 }
 
 export class NotionConnectionVault {
@@ -111,8 +108,6 @@ export class NotionConnectionVault {
     if (!object(value) || !validToken(value.token) || value.read !== true || typeof value.write !== "boolean") {
       throw new ProviderError("EXTERNAL_ACCESS_DENIED", 503, true);
     }
-    // Keep the same object identity while this Durable Object instance is warm so
-    // provider pacing/circuit state remains connection-scoped across requests.
     this.cachedConnection = value;
     return this.cachedConnection;
   }
@@ -123,7 +118,7 @@ export class NotionConnectionVault {
     try { body = await request.json(); } catch { body = null; }
     if (!object(body) || typeof body.operation !== "string") return Response.json({ error: "invalid" }, { status: 422 });
     try {
-      if (body.operation === "configure") {
+      if (body.operation === "create" || body.operation === "configure") {
         if (!object(body.credential) || body.credential.type !== "bearer_token" || !validToken(body.credential.token)) {
           throw new ProviderError("EXTERNAL_VALIDATION_FAILED", 422, true);
         }
@@ -155,18 +150,14 @@ export class NotionConnectionVault {
         return Response.json({ data: { deleted: true } });
       }
       const connection = await this.load();
-      if (body.operation === "listResources") {
-        return Response.json({ data: await listConnectionResources(connection, body.input ?? {}) });
-      }
+      if (body.operation === "listResources") return Response.json({ data: await listConnectionResources(connection, body.input ?? {}) });
       if (body.operation === "execute") {
         if (!object(body.request)) throw new ProviderError("EXTERNAL_VALIDATION_FAILED", 422, true);
         return Response.json({ data: await this.provider.execute(connection, body.request) });
       }
       throw new ProviderError("EXTERNAL_VALIDATION_FAILED", 422, true);
     } catch (error) {
-      if (error instanceof ProviderError) {
-        return Response.json({ error: { code: error.code, retrySafe: error.retrySafe } }, { status: error.status });
-      }
+      if (error instanceof ProviderError) return Response.json({ error: { code: error.code, retrySafe: error.retrySafe } }, { status: error.status });
       return Response.json({ error: { code: "EXTERNAL_UNAVAILABLE", retrySafe: false } }, { status: 503 });
     }
   }
