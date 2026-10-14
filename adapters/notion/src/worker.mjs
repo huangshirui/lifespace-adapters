@@ -3,6 +3,13 @@ export { NotionConnectionVault } from "./connection-vault.mjs";
 
 const configurations = new Map();
 const dynamicRef = (ref) => typeof ref === "string" && /^cnx_[a-f0-9]{32}$/u.test(ref);
+const providerDescriptor = {
+  key: "notion",
+  displayName: "Notion",
+  credential: { type: "bearer_token", displayName: "Integration token" },
+  resource: { type: "data_source", displayName: "Data source" },
+  access: ["read", "write"],
+};
 
 function staticConnection(env, ref) {
   if (typeof ref !== "string" || !/^[A-Za-z0-9_-]{1,128}$/u.test(ref)) return null;
@@ -69,6 +76,9 @@ export function createWorker(provider = createNotionProvider()) {
           throw new ProviderError("EXTERNAL_CONTRACT_INVALID", 502, true);
         }
         if (url.pathname === "/internal/v1/external-connections") {
+          if (body.operation === "describe") {
+            return Response.json({ contractVersion: 1, data: providerDescriptor });
+          }
           if (!dynamicRef(body.credentialRef)) throw new ProviderError("EXTERNAL_VALIDATION_FAILED", 422, true);
           const data = await callVault(env, body.credentialRef, {
             operation: body.operation,
