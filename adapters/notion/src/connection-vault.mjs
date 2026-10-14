@@ -3,6 +3,9 @@ import { createNotionProvider, NOTION_VERSION, ProviderError, uuid } from "./pro
 const CONFIG_KEY = "connection";
 const MAX_TOKEN_BYTES = 8192;
 const MAX_QUERY = 200;
+const VAULT_FORMAT_VERSION = 1;
+const VAULT_ALGORITHM = "AES-GCM";
+const VAULT_AAD = new TextEncoder().encode("lifespace:notion-connection-vault:v1");
 
 function object(value) {
   return value && typeof value === "object" && !Array.isArray(value);
@@ -14,6 +17,9 @@ function validToken(value) {
     && !/[\r\n]/u.test(value)
     && new TextEncoder().encode(value).length <= MAX_TOKEN_BYTES;
 }
+function validConnection(value) {
+  return object(value) && validToken(value.token) && value.read === true && typeof value.write === "boolean";
+}
 function accessMode(value) {
   if (value !== "read" && value !== "write") throw new ProviderError("EXTERNAL_VALIDATION_FAILED", 422, true);
   return { read: true, write: value === "write" };
@@ -21,6 +27,65 @@ function accessMode(value) {
 function title(value) {
   if (!Array.isArray(value)) return "";
   return value.map((part) => part?.plain_text ?? part?.text?.content ?? "").join("").trim();
+}
+function bytesToBase64Url(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+}
+function base64UrlToBytes(value) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/u.test(value)) throw new Error("invalid base64url");
+  const normalized = value.replaceAll("-", "+").replaceAll("_", "/");
+  const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
+  const binary = atob(padded);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+function masterKeyBytes(secret) {
+  if (typeof secret !== "string" || !/^[0-9a-fA-F]{64}$/u.test(secret)) {
+    throw new ProviderError("EXTERNAL_UNAVAILABLE", 503, false);
+  }
+  const bytes = new Uint8Array(32);
+  for (let index = 0; index < bytes.length; index += 1) bytes[index] = Number.parseInt(secret.slice(index * 2, index * 2 + 2), 16);
+  return bytes;
+}
+async function importVaultKey(secret) {
+  return crypto.subtle.importKey("raw", masterKeyBytes(secret), { name: VAULT_ALGORITHM }, false, ["encrypt", "decrypt"]);
+}
+function encryptedEnvelope(value) {
+  return object(value)
+    && value.version === VAULT_FORMAT_VERSION
+    && value.algorithm === VAULT_ALGORITHM
+    && typeof value.iv === "string"
+    && typeof value.ciphertext === "string";
+}
+async function encryptConnection(connection, secret) {
+  if (!validConnection(connection)) throw new ProviderError("EXTERNAL_VALIDATION_FAILED", 422, true);
+  const key = await importVaultKey(secret);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const plaintext = new TextEncoder().encode(JSON.stringify(connection));
+  const ciphertext = await crypto.subtle.encrypt({ name: VAULT_ALGORITHM, iv, additionalData: VAULT_AAD }, key, plaintext);
+  return {
+    version: VAULT_FORMAT_VERSION,
+    algorithm: VAULT_ALGORITHM,
+    iv: bytesToBase64Url(iv),
+    ciphertext: bytesToBase64Url(new Uint8Array(ciphertext)),
+  };
+}
+async function decryptConnection(envelope, secret) {
+  try {
+    if (!encryptedEnvelope(envelope)) throw new Error("invalid envelope");
+    const key = await importVaultKey(secret);
+    const iv = base64UrlToBytes(envelope.iv);
+    if (iv.length !== 12) throw new Error("invalid iv");
+    const ciphertext = base64UrlToBytes(envelope.ciphertext);
+    const plaintext = await crypto.subtle.decrypt({ name: VAULT_ALGORITHM, iv, additionalData: VAULT_AAD }, key, ciphertext);
+    const value = JSON.parse(new TextDecoder().decode(plaintext));
+    if (!validConnection(value)) throw new Error("invalid connection");
+    return value;
+  } catch (error) {
+    if (error instanceof ProviderError) throw error;
+    throw new ProviderError("EXTERNAL_UNAVAILABLE", 503, false);
+  }
 }
 
 async function notionRead(connection, path, body) {
@@ -96,20 +161,35 @@ export async function listConnectionResources(connection, input = {}) {
 }
 
 export class NotionConnectionVault {
-  constructor(state) {
+  constructor(state, env) {
     this.state = state;
+    this.env = env;
     this.provider = createNotionProvider();
     this.cachedConnection = undefined;
   }
 
+  async persist(connection) {
+    const envelope = await encryptConnection(connection, this.env?.CONNECTION_VAULT_MASTER_KEY);
+    await this.state.storage.put(CONFIG_KEY, envelope);
+    this.cachedConnection = connection;
+  }
+
   async load() {
     if (this.cachedConnection) return this.cachedConnection;
-    const value = await this.state.storage.get(CONFIG_KEY);
-    if (!object(value) || !validToken(value.token) || value.read !== true || typeof value.write !== "boolean") {
-      throw new ProviderError("EXTERNAL_ACCESS_DENIED", 503, true);
+    const stored = await this.state.storage.get(CONFIG_KEY);
+    if (encryptedEnvelope(stored)) {
+      this.cachedConnection = await decryptConnection(stored, this.env?.CONNECTION_VAULT_MASTER_KEY);
+      return this.cachedConnection;
     }
-    this.cachedConnection = value;
-    return this.cachedConnection;
+    // One-way lazy migration from the pre-encryption format. The plaintext is
+    // accepted only when it exactly matches the legacy connection projection,
+    // then immediately replaced by the AES-GCM envelope before use continues.
+    if (validConnection(stored)) {
+      const legacy = { token: stored.token, read: true, write: stored.write };
+      await this.persist(legacy);
+      return legacy;
+    }
+    throw new ProviderError("EXTERNAL_ACCESS_DENIED", 503, true);
   }
 
   async fetch(request) {
@@ -125,8 +205,7 @@ export class NotionConnectionVault {
         const access = accessMode(body.access);
         const connection = { token: body.credential.token, ...access };
         await validateConnectionCredential(connection);
-        await this.state.storage.put(CONFIG_KEY, connection);
-        this.cachedConnection = connection;
+        await this.persist(connection);
         return Response.json({ data: { read: true, write: connection.write } });
       }
       if (body.operation === "update") {
@@ -140,8 +219,7 @@ export class NotionConnectionVault {
           next.token = body.credential.token;
         }
         if (body.credential !== undefined) await validateConnectionCredential(next);
-        await this.state.storage.put(CONFIG_KEY, next);
-        this.cachedConnection = next;
+        await this.persist(next);
         return Response.json({ data: { read: true, write: next.write } });
       }
       if (body.operation === "delete") {
