@@ -111,6 +111,7 @@ jobs:
       - name: Syntax check Notion provider adapter
         run: |
           node --check adapters/notion/src/provider.mjs
+          node --check adapters/notion/src/connection-vault.mjs
           node --check adapters/notion/src/worker.mjs
       - name: Test Notion provider contract and safety boundaries
         run: node --test adapters/notion/test/*.test.mjs
