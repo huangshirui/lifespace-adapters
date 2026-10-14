@@ -95,7 +95,8 @@ test("decrypted credential is not cached across Durable Object requests", async 
     assert.equal(configured.status, 200);
   });
   const encrypted = storage.get("connection");
-  storage.set("connection", { ...encrypted, ciphertext: `${encrypted.ciphertext.slice(0, -1)}${encrypted.ciphertext.endsWith("A") ? "B" : "A"}` });
+  const replacement = encrypted.ciphertext.startsWith("A") ? "B" : "A";
+  storage.set("connection", { ...encrypted, ciphertext: `${replacement}${encrypted.ciphertext.slice(1)}` });
   const response = await vault.fetch(request({ operation: "execute", request: { contractVersion: 1, providerKey: "notion", credentialRef: "cnx_" + "d".repeat(32), operation: "connection", resourceId: "connection" } }));
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { error: { code: "EXTERNAL_UNAVAILABLE", retrySafe: false } });
