@@ -1,7 +1,6 @@
 import { createNotionProvider, ProviderError } from "./provider.mjs";
 export { NotionConnectionVault } from "./connection-vault.mjs";
 
-const configurations = new Map();
 const dynamicRef = (ref) => typeof ref === "string" && /^cnx_[a-f0-9]{32}$/u.test(ref);
 const providerDescriptor = {
   key: "notion",
@@ -10,22 +9,6 @@ const providerDescriptor = {
   resource: { type: "data_source", displayName: "Data source" },
   access: ["read", "write"],
 };
-
-function staticConnection(env, ref) {
-  if (typeof ref !== "string" || !/^[A-Za-z0-9_-]{1,128}$/u.test(ref)) return null;
-  // Cache only deployment-managed bootstrap configuration; rotation changes the Secret value.
-  let parsed = configurations.get(env.NOTION_CONNECTIONS);
-  if (!parsed) {
-    try { parsed = JSON.parse(env.NOTION_CONNECTIONS ?? "{}"); }
-    catch { return null; }
-    configurations.clear();
-    configurations.set(env.NOTION_CONNECTIONS, parsed);
-  }
-  if (!Object.hasOwn(parsed, ref)) return null;
-  const connection = parsed[ref];
-  if (!connection || typeof connection.token !== "string" || !connection.token || connection.disabled === true) return null;
-  return connection;
-}
 
 async function sameSecret(a, b) {
   if (typeof a !== "string" || typeof b !== "string" || b.length < 32) return false;
@@ -89,14 +72,7 @@ export function createWorker(provider = createNotionProvider()) {
           });
           return Response.json({ contractVersion: 1, data });
         }
-        let data;
-        if (dynamicRef(body.credentialRef)) {
-          data = await callVault(env, body.credentialRef, { operation: "execute", request: body });
-        } else {
-          const connection = staticConnection(env, body.credentialRef);
-          if (!connection) return errorResponse("EXTERNAL_ACCESS_DENIED", 503, true);
-          data = await provider.execute(connection, body);
-        }
+        const data = await callVault(env, body.credentialRef, { operation: "execute", request: body });
         return Response.json({ contractVersion: 1, data });
       } catch (error) {
         if (error instanceof ProviderError) return errorResponse(error.code, error.status, error.retrySafe);
