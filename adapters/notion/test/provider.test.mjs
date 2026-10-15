@@ -241,7 +241,7 @@ test("uncertain create is not retried, including schema mismatch in a successful
   );
   assert.equal(n, 1);
 });
-test("connection read ceiling and internal authentication fail closed, with no secret in errors", async () => {
+test("connection read ceiling and internal authentication fail closed; static references are rejected", async () => {
   const s = await projectSchema(schema, connection);
   const p = createNotionProvider({
     fetch: async () => {
@@ -259,7 +259,6 @@ test("connection read ceiling and internal authentication fail closed, with no s
     env = {
       EXTERNAL_ADAPTER_SHARED_SECRET:
         "synthetic-shared-secret-at-least-32-characters",
-      NOTION_CONNECTIONS: JSON.stringify({ test_ref: connection }),
     };
   const response = await worker.fetch(
     new Request("https://example.com/internal/v1/external-models", {
@@ -270,17 +269,18 @@ test("connection read ceiling and internal authentication fail closed, with no s
   );
   assert.equal(response.status, 401);
   assert(!(await response.text()).includes(connection.token));
-  const ok = await worker.fetch(
+  const rejected = await worker.fetch(
     new Request("https://example.com/internal/v1/external-models", {
       method: "POST",
       headers: {
         "x-lifespace-internal-secret": env.EXTERNAL_ADAPTER_SHARED_SECRET,
       },
-      body: JSON.stringify(input("get", s, { credentialRef: "__proto__" })),
+      body: JSON.stringify(input("get", s, { credentialRef: "legacy_static_ref" })),
     }),
     env,
   );
-  assert.equal(ok.status, 503);
+  assert.equal(rejected.status, 422);
+  assert.equal((await rejected.json()).error.code, "EXTERNAL_VALIDATION_FAILED");
 });
 test("multi-source database requires explicit source selection", async () => {
   const p = createNotionProvider({
