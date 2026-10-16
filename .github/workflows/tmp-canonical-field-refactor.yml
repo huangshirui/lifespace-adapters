@@ -1,0 +1,44 @@
+name: Temporary canonical field refactor
+
+on:
+  push:
+    branches:
+      - refactor/canonical-field-language
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refactor/canonical-field-language
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply refactor
+        run: node tmp-canonical-field-refactor.mjs
+      - name: Validate Notion provider
+        run: |
+          node --check adapters/notion/src/provider.mjs
+          node --check adapters/notion/src/connection-vault.mjs
+          node --check adapters/notion/src/worker.mjs
+          node --test adapters/notion/test/*.test.mjs
+      - name: Validate MCP projection
+        run: |
+          node --check adapters/mcp/src/progressive-discovery.mjs
+          node --check adapters/mcp/src/projection.mjs
+          node --test adapters/mcp/test/*.test.mjs
+      - name: Commit changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add adapters/notion/src/provider.mjs adapters/notion/README.md adapters/notion/test/provider.test.mjs docs/lifespace-contract-consumption.md
+          git diff --cached --quiet && { echo 'No changes'; exit 1; }
+          git commit -m 'refactor: align provider fields with canonical language'
+          git push origin HEAD:refactor/canonical-field-language
