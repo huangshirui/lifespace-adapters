@@ -162,7 +162,7 @@ The MCP fixtures are synthetic and model the current Progressive Discovery + Can
 
 ## External Model Adapter v1 / 外部模型适配器
 
-The provider-facing Notion adapter explicitly consumes LifeSpace `apps/core/external-adapter.contract.json` version 1 and the boundaries in `docs/external-models.md`. Provider field codecs/schema/query translation remain adapter-owned. Core consumes only the compatible projection. This contract is independent from Native immutable mct revisions. The tested MCP External query projection loads dynamic Space-scoped descriptors and preserves Provider-defined ordering without fabricating a Native version. Unsupported or stale descriptors fail closed; MCP mutation/action projection and transport remain unimplemented.
+The provider-facing Notion adapter explicitly consumes LifeSpace `apps/core/external-adapter.contract.json` version 1 and the boundaries in `docs/external-models.md`. External fields use the same LifeSpace Canonical Field Language as Native models; the Provider adapter chooses only the canonical types/capabilities it can map safely and does not own a second type system. Provider field codecs/schema/query translation remain adapter-owned. Core consumes only the compatible projection. This contract is independent from Native immutable mct revisions. The tested MCP External query projection loads dynamic Space-scoped descriptors and preserves Provider-defined ordering without fabricating a Native version. Unsupported or stale descriptors fail closed; MCP mutation/action projection and transport remain unimplemented.
 
 ## Dynamic External business models
 

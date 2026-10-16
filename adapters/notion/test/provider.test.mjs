@@ -61,6 +61,20 @@ test("only representable types survive, stable keys survive rename and type chan
   assert.equal(b.title, "Renamed");
   assert.equal(next.capabilities.atomicBatch, false);
 });
+test("enum projection follows the canonical 50-value bound", async () => {
+  const withSelect = structuredClone(schema);
+  withSelect.properties.Status = {
+    id: "status",
+    name: "Status",
+    type: "select",
+    select: { options: Array.from({ length: 50 }, (_, index) => ({ name: `v${index}` })) },
+  };
+  const accepted = await projectSchema(withSelect, connection);
+  assert(accepted.fields.some((field) => field.sourceFieldId === "status"));
+  withSelect.properties.Status.select.options.push({ name: "v50" });
+  const rejected = await projectSchema(withSelect, connection);
+  assert.equal(rejected.fields.some((field) => field.sourceFieldId === "status"), false);
+});
 test("typed filters/sort push down by property ID; wrong types and hidden fields fail closed", async () => {
   const s = await projectSchema(schema, connection),
     number = s.fields.find((f) => f.type === "number");

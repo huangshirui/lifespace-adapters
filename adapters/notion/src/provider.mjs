@@ -88,7 +88,7 @@ export async function projectSchema(schema, connection) {
       values = (p[p.type]?.options ?? []).map((o) => o.name);
       if (
         !values.length ||
-        values.length > 100 ||
+        values.length > 50 ||
         values.some((v) => typeof v !== "string" || !v.length || v.length > 256)
       )
         continue;
