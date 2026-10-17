@@ -33,7 +33,7 @@ Provider `property.id` is emitted as `sourceFieldId` and remains the durable Ada
 | created_time, last_edited_time | instant | yes | no | comparisons; provider sort | read-only |
 | unique_id | string | yes | no | none | optional Provider property; read-only when present |
 | date | date | yes | ceiling | comparisons/null; provider sort | Start Date projection |
-| files | file_ref_list | yes | no | none | Provider-hosted references only; bytes remain in Notion |
+| files | file_ref_list | yes | no (separate upload capability) | none | Provider-hosted references; write-enabled connections may advertise bounded upload separately |
 | relation | — | no | no | no | Notion-internal relation, intentionally omitted |
 | people | — | no | no | no | Notion workspace identity, intentionally omitted |
 | created_by, last_edited_by | — | no | no | no | Notion workspace identity, intentionally omitted |
@@ -74,7 +74,9 @@ The Adapter takes the `YYYY-MM-DD` prefix from the Provider `start`; it does not
 ]
 ```
 
-For Notion-hosted files, the current signed URL and expiry are returned. For external files, the original URL is returned without fabricated expiry. File bytes are never copied into LifeSpace/R2 and signed URLs are not treated as durable file identity.
+For Notion-hosted files, the current signed URL and expiry are returned. For external files, the original URL is returned without fabricated expiry. Signed URLs are not treated as durable file identity.
+
+A write-enabled Dynamic Connection may additionally advertise `upload: { supported: true, maxBytes: 20971520 }` on the `file_ref_list` field. This is intentionally separate from ordinary field `writable`: applications cannot PATCH canonical file references directly. The LifeSpace upload session first stages the client upload in short-lived R2 transport storage, then the Adapter validates the target page/field, reads that staged object, sends it through Notion's single-part File Upload API, preserves the current Notion `files` array and appends the new `file_upload` entry. Notion remains the durable owner of External file bytes; the R2 staging object is deleted after successful finalization or later cleanup. V1 is bounded to 20 MiB per Notion upload and does not use Notion external-URL import. Any timeout or ambiguous failure after a Notion write begins is returned as `EXTERNAL_WRITE_UNKNOWN` and is never blindly retried.
 
 ### Metadata mapping / 元数据映射
 
