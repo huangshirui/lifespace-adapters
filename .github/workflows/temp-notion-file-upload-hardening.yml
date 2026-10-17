@@ -1,0 +1,36 @@
+name: temp-notion-file-upload-hardening
+
+on:
+  push:
+    branches: [feat/notion-file-upload]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/notion-file-upload
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply hardening
+        run: python scripts/harden-notion-file-upload.py
+      - name: Syntax check
+        run: node --check adapters/notion/src/provider.mjs
+      - name: Test Notion provider contract and safety boundaries
+        run: node --test adapters/notion/test/*.test.mjs
+      - name: Commit verified hardening
+        run: |
+          rm -f scripts/harden-notion-file-upload.py .github/workflows/temp-notion-file-upload-hardening.yml
+          rmdir scripts 2>/dev/null || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "test(notion): harden external file upload boundaries"
+          git push origin HEAD:feat/notion-file-upload
