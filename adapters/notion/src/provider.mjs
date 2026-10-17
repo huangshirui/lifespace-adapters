@@ -40,11 +40,58 @@ const text = (v) =>
 async function fieldKey(id) {
   const h = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(id));
   return (
-    "f_" +
+    "field" +
     Array.from(new Uint8Array(h), (b) => b.toString(16).padStart(2, "0"))
       .join("")
-      .slice(0, 32)
+      .slice(0, 12)
   );
+}
+function dateOnly(value) {
+  if (typeof value !== "string") return null;
+  const date = value.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const [year, month, day] = date.split("-").map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() + 1 === month && parsed.getUTCDate() === day
+    ? date
+    : null;
+}
+function absoluteInstant(value) {
+  return typeof value === "string"
+    && /^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+    && !Number.isNaN(Date.parse(value));
+}
+function validHttpUrl(value) {
+  if (typeof value !== "string" || !value || value.length > 8192) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+function projectFiles(raw) {
+  if (!Array.isArray(raw)) return null;
+  const refs = [];
+  for (const entry of raw) {
+    if (!object(entry) || typeof entry.name !== "string" || !entry.name.trim()) return null;
+    if (entry.type === "external" && object(entry.external) && validHttpUrl(entry.external.url)) {
+      refs.push({ name: entry.name.trim(), url: entry.external.url });
+      continue;
+    }
+    if (entry.type === "file" && object(entry.file) && validHttpUrl(entry.file.url)) {
+      const expiresAt = entry.file.expiry_time;
+      if (expiresAt !== undefined && expiresAt !== null && !absoluteInstant(expiresAt)) return null;
+      refs.push({
+        name: entry.name.trim(),
+        url: entry.file.url,
+        ...(typeof expiresAt === "string" ? { expiresAt } : {}),
+      });
+      continue;
+    }
+    return null;
+  }
+  return refs;
 }
 const supported = {
   title: ["string", true, "eq", "ne", "contains", "isNull", "isNotNull"],
@@ -64,11 +111,15 @@ const supported = {
   checkbox: ["boolean", true, "eq", "ne"],
   select: ["enum", true, "eq", "ne", "isNull", "isNotNull"],
   status: ["enum", true, "eq", "ne", "isNull", "isNotNull"],
+  multi_select: ["enum_list", true, "contains"],
+  date: ["date", true, "eq", "lt", "lte", "gt", "gte", "isNull", "isNotNull"],
   url: ["string", true, "eq", "ne", "contains", "isNull", "isNotNull"],
   email: ["string", true, "eq", "ne", "contains", "isNull", "isNotNull"],
   phone_number: ["string", true, "eq", "ne", "contains", "isNull", "isNotNull"],
   created_time: ["instant", false, "eq", "lt", "lte", "gt", "gte"],
   last_edited_time: ["instant", false, "eq", "lt", "lte", "gt", "gte"],
+  unique_id: ["string", false],
+  files: ["file_ref_list", false],
 };
 export async function projectSchema(schema, connection) {
   const fields = [],
@@ -82,9 +133,9 @@ export async function projectSchema(schema, connection) {
       !p.name.length
     )
       continue;
-    const [type, writable, ...operators] = config;
+    const [type, providerWritable, ...operators] = config;
     let values;
-    if (type === "enum") {
+    if (type === "enum" || type === "enum_list") {
       values = (p[p.type]?.options ?? []).map((o) => o.name);
       if (
         !values.length ||
@@ -94,19 +145,23 @@ export async function projectSchema(schema, connection) {
         continue;
     }
     const key = await fieldKey(p.id);
+    const rawDescription = typeof p.description === "string" ? p.description.trim() : "";
+    const description = rawDescription && rawDescription.length <= 300 ? rawDescription : undefined;
     fields.push({
       key,
       sourceFieldId: p.id,
       title: p.name,
+      ...(description ? { description } : {}),
       type,
       nullable: p.type !== "checkbox",
+      ...(providerWritable ? {} : { readOnly: true }),
       readable: true,
-      writable: writable && connection.write === true,
+      writable: providerWritable && connection.write === true,
       operators,
-      sortable: true,
+      sortable: !["unique_id", "multi_select", "files"].includes(p.type),
       ...(values ? { values } : {}),
     });
-    codecs[key] = { id: p.id, type: p.type };
+    codecs[p.id] = { id: p.id, type: p.type };
   }
   fields.sort((a, b) => a.key.localeCompare(b.key));
   if (fields.length > 100) fail("EXTERNAL_CONTRACT_INVALID", 502);
@@ -131,6 +186,15 @@ export async function projectSchema(schema, connection) {
     adapterState: { codecs },
   };
 }
+function codecFor(snapshot, field) {
+  const codecs = snapshot.adapterState?.codecs;
+  if (!object(codecs)) return undefined;
+  const direct = codecs[field.sourceFieldId] ?? codecs[field.key];
+  if (object(direct) && direct.id === field.sourceFieldId) return direct;
+  return Object.values(codecs).find(
+    (codec) => object(codec) && codec.id === field.sourceFieldId,
+  );
+}
 function validateValue(field, value) {
   if (value === null) {
     if (!field.nullable) fail();
@@ -144,21 +208,45 @@ function validateValue(field, value) {
     if (typeof value !== "boolean") fail();
     return;
   }
+  if (field.type === "date") {
+    if (dateOnly(value) !== value) fail();
+    return;
+  }
+  if (field.type === "enum_list") {
+    if (
+      !Array.isArray(value)
+      || value.some((entry) => typeof entry !== "string" || !field.values?.includes(entry))
+      || new Set(value).size !== value.length
+    )
+      fail();
+    return;
+  }
+  if (field.type === "file_ref_list") {
+    if (!Array.isArray(value) || value.length > 100) fail();
+    for (const ref of value) {
+      if (
+        !object(ref)
+        || Object.keys(ref).some((key) => !["name", "url", "expiresAt"].includes(key))
+        || typeof ref.name !== "string"
+        || !ref.name.trim()
+        || ref.name.trim().length > 512
+        || !validHttpUrl(ref.url)
+        || (ref.expiresAt !== undefined && !absoluteInstant(ref.expiresAt))
+      )
+        fail();
+    }
+    return;
+  }
   if (typeof value !== "string" || value.length > 200000) fail();
   if (field.type === "enum" && !field.values?.includes(value)) fail();
-  if (
-    field.type === "instant" &&
-    (!/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(value) ||
-      Number.isNaN(Date.parse(value)))
-  )
-    fail();
+  if (field.type === "instant" && !absoluteInstant(value)) fail();
 }
 export function translateWrite(snapshot, input) {
   if (!object(input)) fail();
   const result = {};
   for (const [key, value] of Object.entries(input)) {
     const f = snapshot.fields.find((x) => x.key === key);
-    const codec = snapshot.adapterState.codecs[key];
+    const codec = f ? codecFor(snapshot, f) : undefined;
     if (!f?.writable || !codec || !supported[codec.type]) fail();
     validateValue(f, value);
     let translated = value;
@@ -172,9 +260,29 @@ export function translateWrite(snapshot, input) {
         });
     } else if (codec.type === "select" || codec.type === "status")
       translated = value === null ? null : { name: value };
+    else if (codec.type === "multi_select")
+      translated = value === null ? [] : value.map((name) => ({ name }));
+    else if (codec.type === "date")
+      translated = value === null ? null : { start: value, end: null };
     result[codec.id] = { [codec.type]: translated };
   }
   return result;
+}
+function projectPropertyValue(field, codec, raw) {
+  if (codec.type === "title" || codec.type === "rich_text") return text(raw);
+  if (codec.type === "select" || codec.type === "status") return raw?.name ?? null;
+  if (codec.type === "multi_select") {
+    if (!Array.isArray(raw)) return null;
+    const values = raw.map((entry) => entry?.name);
+    return values.every((value) => typeof value === "string") ? values : null;
+  }
+  if (codec.type === "date") return raw?.start ? dateOnly(raw.start) : null;
+  if (codec.type === "unique_id") {
+    if (!object(raw) || !Number.isInteger(raw.number) || raw.number < 0) return null;
+    return raw.prefix ? `${raw.prefix}-${raw.number}` : String(raw.number);
+  }
+  if (codec.type === "files") return projectFiles(raw);
+  return raw ?? null;
 }
 export function projectRecord(snapshot, page) {
   if (page.object !== "page" || page.in_trash || page.archived)
@@ -189,26 +297,16 @@ export function projectRecord(snapshot, page) {
   );
   const data = {};
   for (const field of snapshot.fields) {
-    const codec = snapshot.adapterState.codecs[field.key];
-    const p = byId.get(codec.id);
-    if (!p || p.type !== codec.type)
+    const codec = codecFor(snapshot, field);
+    const p = codec ? byId.get(codec.id) : undefined;
+    if (!codec || !p || p.type !== codec.type)
       throw new ProviderError("EXTERNAL_SCHEMA_CHANGED", 409, true);
-    const raw = p[p.type];
-    let value;
-    if (p.type === "title" || p.type === "rich_text") value = text(raw);
-    else if (p.type === "select" || p.type === "status")
-      value = raw?.name ?? null;
-    else value = raw ?? null;
+    let value = projectPropertyValue(field, codec, p[p.type]);
     try {
       validateValue(field, value);
     } catch {
-      throw new ProviderError(
-        field.type === "enum"
-          ? "EXTERNAL_SCHEMA_CHANGED"
-          : "EXTERNAL_CONTRACT_INVALID",
-        field.type === "enum" ? 409 : 502,
-        field.type === "enum",
-      );
+      if (field.nullable) value = null;
+      else throw new ProviderError("EXTERNAL_CONTRACT_INVALID", 502, false);
     }
     data[field.key] = value;
   }
@@ -229,6 +327,13 @@ const opMap = {
   contains: "contains",
   isNull: "is_empty",
   isNotNull: "is_not_empty",
+};
+const dateOpMap = {
+  eq: "equals",
+  lt: "before",
+  lte: "on_or_before",
+  gt: "after",
+  gte: "on_or_after",
 };
 export function translateQuery(snapshot, input) {
   keys(input, ["filter", "sort", "page"]);
@@ -263,15 +368,21 @@ export function translateQuery(snapshot, input) {
     }
     keys(v, ["field", "op", "value"]);
     const f = snapshot.fields.find((x) => x.key === v.field);
-    const codec = snapshot.adapterState.codecs[v.field];
+    const codec = f ? codecFor(snapshot, f) : undefined;
     if (!f || !f.operators.includes(v.op) || !codec)
       fail("EXTERNAL_QUERY_UNSUPPORTED");
     const isNull = v.op === "isNull" || v.op === "isNotNull";
     if (!isNull) {
       if (v.value === null) fail("EXTERNAL_QUERY_UNSUPPORTED");
-      validateValue(f, v.value);
+      if (f.type === "enum_list" && v.op === "contains") {
+        if (typeof v.value !== "string" || !f.values?.includes(v.value))
+          fail("EXTERNAL_QUERY_UNSUPPORTED");
+      } else {
+        validateValue(f, v.value);
+      }
     } else if ("value" in v) fail();
     const isTime = ["created_time", "last_edited_time"].includes(codec.type);
+    const isDate = codec.type === "date";
     let op = opMap[v.op];
     if (isTime)
       op = {
@@ -282,6 +393,7 @@ export function translateQuery(snapshot, input) {
         gt: "after",
         gte: "on_or_after",
       }[v.op];
+    if (isDate && !isNull) op = dateOpMap[v.op];
     if (isTime)
       return { timestamp: codec.type, [codec.type]: { [op]: v.value } };
     return {
@@ -296,7 +408,7 @@ export function translateQuery(snapshot, input) {
     result.sorts = input.sort.map((s) => {
       keys(s, ["field", "direction"]);
       const f = snapshot.fields.find((x) => x.key === s.field);
-      const codec = snapshot.adapterState.codecs[s.field];
+      const codec = f ? codecFor(snapshot, f) : undefined;
       if (!f?.sortable || !["asc", "desc"].includes(s.direction) || !codec)
         fail("EXTERNAL_QUERY_UNSUPPORTED");
       return {

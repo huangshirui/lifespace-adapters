@@ -16,22 +16,76 @@ The Adapter never exposes a public credential endpoint. Core is the only normal 
 
 Notion API is explicitly pinned to `2025-09-03` data-source semantics. Status option filters also enable the documented `status-group-filters-2026-10-06` beta header so option names cannot silently match a broader status group. Database selection is resolved only when exactly one source exists; otherwise use the concrete data source ID returned by resource discovery. Canonical identity ignores UUID spelling so alternate spellings/connections cannot duplicate registration.
 
-| Notion type | LifeSpace type | Read | Write | Query |
-| --- | --- | --- | --- | --- |
-| title, url, email, phone_number | string | yes | ceiling | eq/ne/contains/null |
-| rich_text | text (plain text projection) | yes | ceiling | eq/ne/contains/null |
-| number | number | yes | ceiling | comparisons/null |
-| checkbox | boolean | yes | ceiling | eq/ne |
-| select, status with bounded known options | enum (option name) | yes | ceiling | eq/ne/null |
-| created_time, last_edited_time | instant | yes | no | comparisons |
-| date | hidden in V1 | no | no | no |
-| multi_select, people, relation, files, formula, rollup, unique_id, other types | hidden | no | no | no |
+## Canonical field projection / Canonical 字段投影
 
-Date is intentionally hidden: Notion permits a date/instant point or optional-ended range within one property, while the current canonical TemporalRange requires a nonempty half-open range. Inventing an end or discarding one would corrupt meaning. Supporting it needs a separately defined canonical projection; Core must not learn a `notion_date` type. Unsupported types never enter the compatible snapshot. The Adapter is selecting a safe Provider-specific subset of the full LifeSpace Canonical Field Language; the External framework does not define a separate field-type whitelist. Adding future Notion mappings to an already-existing canonical type is therefore Adapter work, provided the mapping is lossless and stable. Rich text formatting/annotations are not preserved; consumers explicitly receive plain text.
+The Adapter does not define a second field language. It projects the Provider schema into LifeSpace Canonical Field Types when a stable deterministic **semantic** projection exists. Provider UI/presentation metadata may be discarded; unsupported Provider fields remain absent instead of leaking Notion-native objects into Core.
 
-Property IDs generate stable `f_<hash>` keys; rename changes title, never the key. Empty enum definitions or definitions with more than 50 options are hidden until representable, matching the current LifeSpace canonical `enum` constraint. Reads validate property type against the snapshot. Get/update/delete verify page parent data-source membership before access/mutation. Stable records use `rec_external_<dataSourceUUID>_<pageUUID>`; no fake version.
+Provider `property.id` is emitted as `sourceFieldId` and remains the durable Adapter/reconciliation identity. Adapter codecs are keyed by `sourceFieldId`. Core assigns and persists the public Native-style readable Field Key after discovery; Notion rename updates title/description but does not change the public key. The old public `f_<hash>` contract is retired.
 
-Query pushes at most two levels of AND/OR typed filters, ordered provider property sorting and <=100 row cursor pages. No client filtering/scan. Provider live ordering/null placement is not a Native ordering guarantee. Trash is delete semantics; no permanent provider destruction. Create is one API call; update/delete use a parent-validation GET then PATCH. Read-only connection writes fail closed.
+| Notion type | LifeSpace type | Read | Write | Query / Sort | Notes |
+| --- | --- | --- | --- | --- | --- |
+| title, url, email, phone_number | string | yes | ceiling | eq/ne/contains/null; provider sort | title/rich values are flattened to canonical text/string semantics |
+| rich_text | text | yes | ceiling | eq/ne/contains/null; provider sort | formatting/annotations are not retained |
+| number | number | yes | ceiling | comparisons/null; provider sort | |
+| checkbox | boolean | yes | ceiling | eq/ne; provider sort | |
+| select, status with bounded known options | enum | yes | ceiling | eq/ne/null; provider sort | option name is canonical value |
+| multi_select with bounded known options | enum_list | yes | ceiling | contains; no sort | unique option-name array |
+| created_time, last_edited_time | instant | yes | no | comparisons; provider sort | read-only |
+| unique_id | string | yes | no | none | read-only |
+| date | date | yes | ceiling | comparisons/null; provider sort | Start Date projection |
+| files | file_ref_list | yes | no | none | Provider-hosted references only; bytes remain in Notion |
+| relation | — | no | no | no | Notion-internal relation, intentionally omitted |
+| people | — | no | no | no | Notion workspace identity, intentionally omitted |
+| created_by, last_edited_by | — | no | no | no | Notion workspace identity, intentionally omitted |
+| verification, place | — | no | no | no | intentionally omitted |
+| formula | — | no | no | no | V1 omits it because result type has no stable schema-level contract |
+| rollup | — | no | no | no | V1 omitted; array rollups are explicitly unsupported |
+| other unsupported types | — | no | no | no | absent from compatible snapshot |
+
+### Date = Start Date
+
+Notion `date` is intentionally projected to one LifeSpace `date`: the calendar date of Provider `start`.
+
+```text
+empty                                           -> null
+2026-10-17                                      -> 2026-10-17
+2026-10-17T14:30:00+08:00                       -> 2026-10-17
+2026-10-17 -> 2026-10-20                        -> 2026-10-17
+2026-10-17T14:30 -> 2026-10-20T18:00            -> 2026-10-17
+```
+
+The Adapter takes the `YYYY-MM-DD` prefix from the Provider `start`; it does not convert the instant to UTC first. Read, filter and sort therefore share the same Start Date semantics. A LifeSpace write sets Notion `start = YYYY-MM-DD` with no `end` or time.
+
+### Files
+
+`files` projects read-only to `file_ref_list`:
+
+```json
+[
+  {
+    "name": "report.pdf",
+    "url": "https://...",
+    "expiresAt": "2026-10-17T12:30:00Z"
+  }
+]
+```
+
+For Notion-hosted files, the current signed URL and expiry are returned. For external files, the original URL is returned without fabricated expiry. File bytes are never copied into LifeSpace/R2 and signed URLs are not treated as durable file identity.
+
+### Metadata
+
+- `property.name -> title`
+- `property.description -> description` when provided
+- `property.id -> sourceFieldId`
+- select/status/multi_select options -> canonical `values`
+- `nullable`, `readOnly`, writable/filter/sort capability may be Adapter-derived from explicit Notion semantics
+- color, number format, formula expression, rollup config and other Provider-only implementation/UI metadata do not enter Canonical `FieldDefinition`
+
+Unsupported Provider field types never enter the compatible snapshot. For supported projections, missing/unavailable Provider values are returned according to the canonical nullable/list semantics rather than turning one weak-schema value into a whole-record contract failure. Reads still validate the Provider property family against the snapshot so an actual schema change is not silently coerced.
+
+Get/update/delete verify page parent data-source membership before access/mutation. Stable records use `rec_external_<dataSourceUUID>_<pageUUID>`; no fake Native version.
+
+Query pushes at most two levels of AND/OR typed filters, ordered Provider property sorting and <=100 row cursor pages. No client filtering/scan. Provider live ordering/null placement/tie behavior is not a Native ordering guarantee. Trash is delete semantics; no permanent Provider destruction. Create is one API call; update/delete use a parent-validation GET then PATCH. Read-only connection writes fail closed.
 
 Dynamic connection execution runs inside the connection Durable Object, so pacing/circuit state is connection-scoped across requests handled by that Object. The provider pace is 350ms, pending queue <=50. Provider 429 uses Retry-After, <=3 attempts and <=10s wait; a longer requested delay returns rate-limited rather than retrying early. GET 5xx can retry; writes with timeout/5xx never retry. Five failures open a 30s circuit. Provider limits remain authoritative; this is not an advertised global quota guarantee.
 

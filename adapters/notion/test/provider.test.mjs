@@ -16,12 +16,12 @@ const schema = {
   id: resource,
   title: [{ plain_text: "Synthetic records" }],
   properties: {
-    Name: { id: "title", name: "Name", type: "title" },
+    Name: { id: "title", name: "Name", type: "title", description: "Primary label" },
     Amount: { id: "num", name: "Amount", type: "number" },
     Formula: { id: "formula", name: "Hidden formula", type: "formula" },
-    Files: { id: "files", name: "Hidden files", type: "files" },
+    Files: { id: "files", name: "Attachments", type: "files" },
     Person: { id: "people", name: "Hidden people", type: "people" },
-    When: { id: "date", name: "Hidden date", type: "date" },
+    When: { id: "date", name: "Start Date", type: "date" },
   },
 };
 const record = {
@@ -31,6 +31,8 @@ const record = {
   properties: {
     Name: { id: "title", type: "title", title: [{ plain_text: "One" }] },
     Amount: { id: "num", type: "number", number: 4 },
+    Files: { id: "files", type: "files", files: [] },
+    When: { id: "date", type: "date", date: null },
   },
   created_time: "2026-01-01T00:00:00Z",
   last_edited_time: "2026-01-01T00:00:00Z",
@@ -46,10 +48,12 @@ const input = (operation, snapshot, extra = {}) => ({
   ...(snapshot ? { snapshot } : {}),
   ...extra,
 });
-test("only representable types survive, stable keys survive rename and type changes replace semantics", async () => {
+test("only supported types survive and source identity remains stable across provider rename/type changes", async () => {
   const first = await projectSchema(schema, connection);
-  assert.equal(first.fields.length, 2);
-  assert.equal(JSON.stringify(first).includes("Hidden"), false);
+  assert.equal(first.fields.length, 4);
+  assert.equal(first.fields.some((field) => field.sourceFieldId === "formula"), false);
+  assert.equal(first.fields.some((field) => field.sourceFieldId === "people"), false);
+  assert.equal(first.fields.find((field) => field.sourceFieldId === "title").description, "Primary label");
   const changed = structuredClone(schema);
   changed.properties.Amount.name = "Renamed";
   changed.properties.Amount.type = "rich_text";
@@ -74,6 +78,115 @@ test("enum projection follows the canonical 50-value bound", async () => {
   withSelect.properties.Status.select.options.push({ name: "v50" });
   const rejected = await projectSchema(withSelect, connection);
   assert.equal(rejected.fields.some((field) => field.sourceFieldId === "status"), false);
+});
+test("Notion date is a Start Date projection for point, time and range values", async () => {
+  const s = await projectSchema(schema, connection);
+  const date = s.fields.find((field) => field.sourceFieldId === "date");
+  assert.equal(date.type, "date");
+  assert.deepEqual(date.operators, ["eq", "lt", "lte", "gt", "gte", "isNull", "isNotNull"]);
+  assert.equal(date.sortable, true);
+
+  for (const raw of [
+    { start: "2026-10-17", end: null },
+    { start: "2026-10-17T23:30:00-07:00", end: null },
+    { start: "2026-10-17", end: "2026-10-20" },
+    { start: "2026-10-17T14:30:00+08:00", end: "2026-10-20T18:00:00+08:00" },
+  ]) {
+    const pageValue = structuredClone(record);
+    pageValue.properties.When.date = raw;
+    assert.equal(projectRecord(s, pageValue).data[date.key], "2026-10-17");
+  }
+
+  assert.deepEqual(translateWrite(s, { [date.key]: "2026-10-18" }), {
+    date: { date: { start: "2026-10-18", end: null } },
+  });
+  assert.deepEqual(
+    translateQuery(s, {
+      filter: { field: date.key, op: "gte", value: "2026-10-18" },
+      sort: [{ field: date.key, direction: "asc" }],
+    }),
+    {
+      page_size: 100,
+      filter: { property: "date", date: { on_or_after: "2026-10-18" } },
+      sorts: [{ property: "date", direction: "ascending" }],
+    },
+  );
+});
+test("unsupported projected values become null instead of failing the whole record", async () => {
+  const s = await projectSchema(schema, connection);
+  const date = s.fields.find((field) => field.sourceFieldId === "date");
+  const malformed = structuredClone(record);
+  malformed.properties.When.date = { start: "not-a-date", end: null };
+  assert.equal(projectRecord(s, malformed).data[date.key], null);
+});
+test("multi_select maps to enum_list and files remain provider-hosted references", async () => {
+  const expanded = structuredClone(schema);
+  expanded.properties.Tags = {
+    id: "tags",
+    name: "Tags",
+    type: "multi_select",
+    multi_select: { options: [{ name: "A" }, { name: "B" }] },
+  };
+  expanded.properties.Sequence = {
+    id: "uid",
+    name: "Sequence",
+    type: "unique_id",
+    unique_id: { prefix: "DOC" },
+  };
+  const s = await projectSchema(expanded, connection);
+  const tags = s.fields.find((field) => field.sourceFieldId === "tags");
+  const files = s.fields.find((field) => field.sourceFieldId === "files");
+  const uid = s.fields.find((field) => field.sourceFieldId === "uid");
+  assert.equal(tags.type, "enum_list");
+  assert.deepEqual(tags.values, ["A", "B"]);
+  assert.deepEqual(tags.operators, ["contains"]);
+  assert.equal(tags.sortable, false);
+  assert.equal(files.type, "file_ref_list");
+  assert.equal(files.writable, false);
+  assert.equal(files.sortable, false);
+  assert.equal(uid.readOnly, true);
+
+  const pageValue = structuredClone(record);
+  pageValue.properties.Tags = {
+    id: "tags",
+    type: "multi_select",
+    multi_select: [{ id: "1", name: "A", color: "red" }, { id: "2", name: "B", color: "blue" }],
+  };
+  pageValue.properties.Sequence = {
+    id: "uid",
+    type: "unique_id",
+    unique_id: { prefix: "DOC", number: 42 },
+  };
+  pageValue.properties.Files.files = [
+    { name: "external.pdf", type: "external", external: { url: "https://example.com/external.pdf" } },
+    {
+      name: "notion.pdf",
+      type: "file",
+      file: {
+        url: "https://signed.example.com/notion.pdf?token=x",
+        expiry_time: "2026-10-17T05:30:00Z",
+      },
+    },
+  ];
+  const projected = projectRecord(s, pageValue).data;
+  assert.deepEqual(projected[tags.key], ["A", "B"]);
+  assert.equal(projected[uid.key], "DOC-42");
+  assert.deepEqual(projected[files.key], [
+    { name: "external.pdf", url: "https://example.com/external.pdf" },
+    {
+      name: "notion.pdf",
+      url: "https://signed.example.com/notion.pdf?token=x",
+      expiresAt: "2026-10-17T05:30:00Z",
+    },
+  ]);
+  assert.deepEqual(translateWrite(s, { [tags.key]: ["B", "A"] }), {
+    tags: { multi_select: [{ name: "B" }, { name: "A" }] },
+  });
+  assert.deepEqual(
+    translateQuery(s, { filter: { field: tags.key, op: "contains", value: "A" } }).filter,
+    { property: "tags", multi_select: { contains: "A" } },
+  );
+  assert.throws(() => translateWrite(s, { [files.key]: [] }), ProviderError);
 });
 test("typed filters/sort push down by property ID; wrong types and hidden fields fail closed", async () => {
   const s = await projectSchema(schema, connection),
