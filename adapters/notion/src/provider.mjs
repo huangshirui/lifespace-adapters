@@ -40,11 +40,21 @@ const text = (v) =>
 async function fieldKey(id) {
   const h = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(id));
   return (
-    "f_" +
+    "field" +
     Array.from(new Uint8Array(h), (b) => b.toString(16).padStart(2, "0"))
       .join("")
-      .slice(0, 32)
+      .slice(0, 12)
   );
+}
+function dateOnly(value) {
+  if (typeof value !== "string") return null;
+  const date = value.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const [year, month, day] = date.split("-").map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() + 1 === month && parsed.getUTCDate() === day
+    ? date
+    : null;
 }
 const supported = {
   title: ["string", true, "eq", "ne", "contains", "isNull", "isNotNull"],
@@ -64,11 +74,13 @@ const supported = {
   checkbox: ["boolean", true, "eq", "ne"],
   select: ["enum", true, "eq", "ne", "isNull", "isNotNull"],
   status: ["enum", true, "eq", "ne", "isNull", "isNotNull"],
+  date: ["date", true, "eq", "lt", "lte", "gt", "gte", "isNull", "isNotNull"],
   url: ["string", true, "eq", "ne", "contains", "isNull", "isNotNull"],
   email: ["string", true, "eq", "ne", "contains", "isNull", "isNotNull"],
   phone_number: ["string", true, "eq", "ne", "contains", "isNull", "isNotNull"],
   created_time: ["instant", false, "eq", "lt", "lte", "gt", "gte"],
   last_edited_time: ["instant", false, "eq", "lt", "lte", "gt", "gte"],
+  unique_id: ["string", false],
 };
 export async function projectSchema(schema, connection) {
   const fields = [],
@@ -82,7 +94,7 @@ export async function projectSchema(schema, connection) {
       !p.name.length
     )
       continue;
-    const [type, writable, ...operators] = config;
+    const [type, providerWritable, ...operators] = config;
     let values;
     if (type === "enum") {
       values = (p[p.type]?.options ?? []).map((o) => o.name);
@@ -94,19 +106,24 @@ export async function projectSchema(schema, connection) {
         continue;
     }
     const key = await fieldKey(p.id);
+    const description = typeof p.description === "string" && p.description.trim()
+      ? p.description.trim().slice(0, 300)
+      : undefined;
     fields.push({
       key,
       sourceFieldId: p.id,
       title: p.name,
+      ...(description ? { description } : {}),
       type,
       nullable: p.type !== "checkbox",
+      ...(providerWritable ? {} : { readOnly: true }),
       readable: true,
-      writable: writable && connection.write === true,
+      writable: providerWritable && connection.write === true,
       operators,
-      sortable: true,
+      sortable: p.type !== "unique_id",
       ...(values ? { values } : {}),
     });
-    codecs[key] = { id: p.id, type: p.type };
+    codecs[p.id] = { id: p.id, type: p.type };
   }
   fields.sort((a, b) => a.key.localeCompare(b.key));
   if (fields.length > 100) fail("EXTERNAL_CONTRACT_INVALID", 502);
@@ -144,6 +161,10 @@ function validateValue(field, value) {
     if (typeof value !== "boolean") fail();
     return;
   }
+  if (field.type === "date") {
+    if (dateOnly(value) !== value) fail();
+    return;
+  }
   if (typeof value !== "string" || value.length > 200000) fail();
   if (field.type === "enum" && !field.values?.includes(value)) fail();
   if (
@@ -158,7 +179,7 @@ export function translateWrite(snapshot, input) {
   const result = {};
   for (const [key, value] of Object.entries(input)) {
     const f = snapshot.fields.find((x) => x.key === key);
-    const codec = snapshot.adapterState.codecs[key];
+    const codec = f ? snapshot.adapterState.codecs[f.sourceFieldId] : undefined;
     if (!f?.writable || !codec || !supported[codec.type]) fail();
     validateValue(f, value);
     let translated = value;
@@ -172,9 +193,21 @@ export function translateWrite(snapshot, input) {
         });
     } else if (codec.type === "select" || codec.type === "status")
       translated = value === null ? null : { name: value };
+    else if (codec.type === "date")
+      translated = value === null ? null : { start: value, end: null };
     result[codec.id] = { [codec.type]: translated };
   }
   return result;
+}
+function projectPropertyValue(field, codec, raw) {
+  if (codec.type === "title" || codec.type === "rich_text") return text(raw);
+  if (codec.type === "select" || codec.type === "status") return raw?.name ?? null;
+  if (codec.type === "date") return raw?.start ? dateOnly(raw.start) : null;
+  if (codec.type === "unique_id") {
+    if (!object(raw) || !Number.isInteger(raw.number) || raw.number < 0) return null;
+    return raw.prefix ? `${raw.prefix}-${raw.number}` : String(raw.number);
+  }
+  return raw ?? null;
 }
 export function projectRecord(snapshot, page) {
   if (page.object !== "page" || page.in_trash || page.archived)
@@ -189,26 +222,16 @@ export function projectRecord(snapshot, page) {
   );
   const data = {};
   for (const field of snapshot.fields) {
-    const codec = snapshot.adapterState.codecs[field.key];
-    const p = byId.get(codec.id);
-    if (!p || p.type !== codec.type)
+    const codec = snapshot.adapterState.codecs[field.sourceFieldId];
+    const p = codec ? byId.get(codec.id) : undefined;
+    if (!codec || !p || p.type !== codec.type)
       throw new ProviderError("EXTERNAL_SCHEMA_CHANGED", 409, true);
-    const raw = p[p.type];
-    let value;
-    if (p.type === "title" || p.type === "rich_text") value = text(raw);
-    else if (p.type === "select" || p.type === "status")
-      value = raw?.name ?? null;
-    else value = raw ?? null;
+    let value = projectPropertyValue(field, codec, p[p.type]);
     try {
       validateValue(field, value);
     } catch {
-      throw new ProviderError(
-        field.type === "enum"
-          ? "EXTERNAL_SCHEMA_CHANGED"
-          : "EXTERNAL_CONTRACT_INVALID",
-        field.type === "enum" ? 409 : 502,
-        field.type === "enum",
-      );
+      if (field.nullable) value = null;
+      else throw new ProviderError("EXTERNAL_CONTRACT_INVALID", 502, false);
     }
     data[field.key] = value;
   }
@@ -229,6 +252,13 @@ const opMap = {
   contains: "contains",
   isNull: "is_empty",
   isNotNull: "is_not_empty",
+};
+const dateOpMap = {
+  eq: "equals",
+  lt: "before",
+  lte: "on_or_before",
+  gt: "after",
+  gte: "on_or_after",
 };
 export function translateQuery(snapshot, input) {
   keys(input, ["filter", "sort", "page"]);
@@ -263,7 +293,7 @@ export function translateQuery(snapshot, input) {
     }
     keys(v, ["field", "op", "value"]);
     const f = snapshot.fields.find((x) => x.key === v.field);
-    const codec = snapshot.adapterState.codecs[v.field];
+    const codec = f ? snapshot.adapterState.codecs[f.sourceFieldId] : undefined;
     if (!f || !f.operators.includes(v.op) || !codec)
       fail("EXTERNAL_QUERY_UNSUPPORTED");
     const isNull = v.op === "isNull" || v.op === "isNotNull";
@@ -272,6 +302,7 @@ export function translateQuery(snapshot, input) {
       validateValue(f, v.value);
     } else if ("value" in v) fail();
     const isTime = ["created_time", "last_edited_time"].includes(codec.type);
+    const isDate = codec.type === "date";
     let op = opMap[v.op];
     if (isTime)
       op = {
@@ -282,6 +313,7 @@ export function translateQuery(snapshot, input) {
         gt: "after",
         gte: "on_or_after",
       }[v.op];
+    if (isDate && !isNull) op = dateOpMap[v.op];
     if (isTime)
       return { timestamp: codec.type, [codec.type]: { [op]: v.value } };
     return {
@@ -296,7 +328,7 @@ export function translateQuery(snapshot, input) {
     result.sorts = input.sort.map((s) => {
       keys(s, ["field", "direction"]);
       const f = snapshot.fields.find((x) => x.key === s.field);
-      const codec = snapshot.adapterState.codecs[s.field];
+      const codec = f ? snapshot.adapterState.codecs[f.sourceFieldId] : undefined;
       if (!f?.sortable || !["asc", "desc"].includes(s.direction) || !codec)
         fail("EXTERNAL_QUERY_UNSUPPORTED");
       return {
