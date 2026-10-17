@@ -29,9 +29,9 @@ Provider `property.id` is emitted as `sourceFieldId` and remains the durable Ada
 | number | number | yes | ceiling | comparisons/null; provider sort | |
 | checkbox | boolean | yes | ceiling | eq/ne; provider sort | |
 | select, status with bounded known options | enum | yes | ceiling | eq/ne/null; provider sort | option name is canonical value |
-| multi_select with bounded known options | enum_list | yes | ceiling | contains/null; provider sort when advertised | unique option-name array |
+| multi_select with bounded known options | enum_list | yes | ceiling | contains; no sort | unique option-name array |
 | created_time, last_edited_time | instant | yes | no | comparisons; provider sort | read-only |
-| unique_id | string | yes | no | eq/ne/contains/null; provider sort when advertised | read-only |
+| unique_id | string | yes | no | none | read-only |
 | date | date | yes | ceiling | comparisons/null; provider sort | Start Date projection |
 | files | file_ref_list | yes | no | none | Provider-hosted references only; bytes remain in Notion |
 | relation | — | no | no | no | Notion-internal relation, intentionally omitted |
