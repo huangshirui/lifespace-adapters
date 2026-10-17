@@ -56,6 +56,43 @@ function dateOnly(value) {
     ? date
     : null;
 }
+function absoluteInstant(value) {
+  return typeof value === "string"
+    && /^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+    && !Number.isNaN(Date.parse(value));
+}
+function validHttpUrl(value) {
+  if (typeof value !== "string" || !value || value.length > 8192) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+function projectFiles(raw) {
+  if (!Array.isArray(raw)) return null;
+  const refs = [];
+  for (const entry of raw) {
+    if (!object(entry) || typeof entry.name !== "string" || !entry.name.trim()) return null;
+    if (entry.type === "external" && object(entry.external) && validHttpUrl(entry.external.url)) {
+      refs.push({ name: entry.name.trim(), url: entry.external.url });
+      continue;
+    }
+    if (entry.type === "file" && object(entry.file) && validHttpUrl(entry.file.url)) {
+      const expiresAt = entry.file.expiry_time;
+      if (expiresAt !== undefined && expiresAt !== null && !absoluteInstant(expiresAt)) return null;
+      refs.push({
+        name: entry.name.trim(),
+        url: entry.file.url,
+        ...(typeof expiresAt === "string" ? { expiresAt } : {}),
+      });
+      continue;
+    }
+    return null;
+  }
+  return refs;
+}
 const supported = {
   title: ["string", true, "eq", "ne", "contains", "isNull", "isNotNull"],
   rich_text: ["text", true, "eq", "ne", "contains", "isNull", "isNotNull"],
@@ -74,6 +111,7 @@ const supported = {
   checkbox: ["boolean", true, "eq", "ne"],
   select: ["enum", true, "eq", "ne", "isNull", "isNotNull"],
   status: ["enum", true, "eq", "ne", "isNull", "isNotNull"],
+  multi_select: ["enum_list", true, "contains"],
   date: ["date", true, "eq", "lt", "lte", "gt", "gte", "isNull", "isNotNull"],
   url: ["string", true, "eq", "ne", "contains", "isNull", "isNotNull"],
   email: ["string", true, "eq", "ne", "contains", "isNull", "isNotNull"],
@@ -81,6 +119,7 @@ const supported = {
   created_time: ["instant", false, "eq", "lt", "lte", "gt", "gte"],
   last_edited_time: ["instant", false, "eq", "lt", "lte", "gt", "gte"],
   unique_id: ["string", false],
+  files: ["file_ref_list", false],
 };
 export async function projectSchema(schema, connection) {
   const fields = [],
@@ -96,7 +135,7 @@ export async function projectSchema(schema, connection) {
       continue;
     const [type, providerWritable, ...operators] = config;
     let values;
-    if (type === "enum") {
+    if (type === "enum" || type === "enum_list") {
       values = (p[p.type]?.options ?? []).map((o) => o.name);
       if (
         !values.length ||
@@ -106,9 +145,8 @@ export async function projectSchema(schema, connection) {
         continue;
     }
     const key = await fieldKey(p.id);
-    const description = typeof p.description === "string" && p.description.trim()
-      ? p.description.trim().slice(0, 300)
-      : undefined;
+    const rawDescription = typeof p.description === "string" ? p.description.trim() : "";
+    const description = rawDescription && rawDescription.length <= 300 ? rawDescription : undefined;
     fields.push({
       key,
       sourceFieldId: p.id,
@@ -120,7 +158,7 @@ export async function projectSchema(schema, connection) {
       readable: true,
       writable: providerWritable && connection.write === true,
       operators,
-      sortable: p.type !== "unique_id",
+      sortable: !["unique_id", "multi_select", "files"].includes(p.type),
       ...(values ? { values } : {}),
     });
     codecs[p.id] = { id: p.id, type: p.type };
@@ -165,14 +203,34 @@ function validateValue(field, value) {
     if (dateOnly(value) !== value) fail();
     return;
   }
+  if (field.type === "enum_list") {
+    if (
+      !Array.isArray(value)
+      || value.some((entry) => typeof entry !== "string" || !field.values?.includes(entry))
+      || new Set(value).size !== value.length
+    )
+      fail();
+    return;
+  }
+  if (field.type === "file_ref_list") {
+    if (!Array.isArray(value) || value.length > 100) fail();
+    for (const ref of value) {
+      if (
+        !object(ref)
+        || Object.keys(ref).some((key) => !["name", "url", "expiresAt"].includes(key))
+        || typeof ref.name !== "string"
+        || !ref.name.trim()
+        || ref.name.trim().length > 512
+        || !validHttpUrl(ref.url)
+        || (ref.expiresAt !== undefined && !absoluteInstant(ref.expiresAt))
+      )
+        fail();
+    }
+    return;
+  }
   if (typeof value !== "string" || value.length > 200000) fail();
   if (field.type === "enum" && !field.values?.includes(value)) fail();
-  if (
-    field.type === "instant" &&
-    (!/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(value) ||
-      Number.isNaN(Date.parse(value)))
-  )
-    fail();
+  if (field.type === "instant" && !absoluteInstant(value)) fail();
 }
 export function translateWrite(snapshot, input) {
   if (!object(input)) fail();
@@ -193,6 +251,8 @@ export function translateWrite(snapshot, input) {
         });
     } else if (codec.type === "select" || codec.type === "status")
       translated = value === null ? null : { name: value };
+    else if (codec.type === "multi_select")
+      translated = value === null ? [] : value.map((name) => ({ name }));
     else if (codec.type === "date")
       translated = value === null ? null : { start: value, end: null };
     result[codec.id] = { [codec.type]: translated };
@@ -202,11 +262,17 @@ export function translateWrite(snapshot, input) {
 function projectPropertyValue(field, codec, raw) {
   if (codec.type === "title" || codec.type === "rich_text") return text(raw);
   if (codec.type === "select" || codec.type === "status") return raw?.name ?? null;
+  if (codec.type === "multi_select") {
+    if (!Array.isArray(raw)) return null;
+    const values = raw.map((entry) => entry?.name);
+    return values.every((value) => typeof value === "string") ? values : null;
+  }
   if (codec.type === "date") return raw?.start ? dateOnly(raw.start) : null;
   if (codec.type === "unique_id") {
     if (!object(raw) || !Number.isInteger(raw.number) || raw.number < 0) return null;
     return raw.prefix ? `${raw.prefix}-${raw.number}` : String(raw.number);
   }
+  if (codec.type === "files") return projectFiles(raw);
   return raw ?? null;
 }
 export function projectRecord(snapshot, page) {
@@ -299,7 +365,12 @@ export function translateQuery(snapshot, input) {
     const isNull = v.op === "isNull" || v.op === "isNotNull";
     if (!isNull) {
       if (v.value === null) fail("EXTERNAL_QUERY_UNSUPPORTED");
-      validateValue(f, v.value);
+      if (f.type === "enum_list" && v.op === "contains") {
+        if (typeof v.value !== "string" || !f.values?.includes(v.value))
+          fail("EXTERNAL_QUERY_UNSUPPORTED");
+      } else {
+        validateValue(f, v.value);
+      }
     } else if ("value" in v) fail();
     const isTime = ["created_time", "last_edited_time"].includes(codec.type);
     const isDate = codec.type === "date";
