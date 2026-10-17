@@ -186,6 +186,15 @@ export async function projectSchema(schema, connection) {
     adapterState: { codecs },
   };
 }
+function codecFor(snapshot, field) {
+  const codecs = snapshot.adapterState?.codecs;
+  if (!object(codecs)) return undefined;
+  const direct = codecs[field.sourceFieldId] ?? codecs[field.key];
+  if (object(direct) && direct.id === field.sourceFieldId) return direct;
+  return Object.values(codecs).find(
+    (codec) => object(codec) && codec.id === field.sourceFieldId,
+  );
+}
 function validateValue(field, value) {
   if (value === null) {
     if (!field.nullable) fail();
@@ -237,7 +246,7 @@ export function translateWrite(snapshot, input) {
   const result = {};
   for (const [key, value] of Object.entries(input)) {
     const f = snapshot.fields.find((x) => x.key === key);
-    const codec = f ? snapshot.adapterState.codecs[f.sourceFieldId] : undefined;
+    const codec = f ? codecFor(snapshot, f) : undefined;
     if (!f?.writable || !codec || !supported[codec.type]) fail();
     validateValue(f, value);
     let translated = value;
@@ -288,7 +297,7 @@ export function projectRecord(snapshot, page) {
   );
   const data = {};
   for (const field of snapshot.fields) {
-    const codec = snapshot.adapterState.codecs[field.sourceFieldId];
+    const codec = codecFor(snapshot, field);
     const p = codec ? byId.get(codec.id) : undefined;
     if (!codec || !p || p.type !== codec.type)
       throw new ProviderError("EXTERNAL_SCHEMA_CHANGED", 409, true);
@@ -359,7 +368,7 @@ export function translateQuery(snapshot, input) {
     }
     keys(v, ["field", "op", "value"]);
     const f = snapshot.fields.find((x) => x.key === v.field);
-    const codec = f ? snapshot.adapterState.codecs[f.sourceFieldId] : undefined;
+    const codec = f ? codecFor(snapshot, f) : undefined;
     if (!f || !f.operators.includes(v.op) || !codec)
       fail("EXTERNAL_QUERY_UNSUPPORTED");
     const isNull = v.op === "isNull" || v.op === "isNotNull";
@@ -399,7 +408,7 @@ export function translateQuery(snapshot, input) {
     result.sorts = input.sort.map((s) => {
       keys(s, ["field", "direction"]);
       const f = snapshot.fields.find((x) => x.key === s.field);
-      const codec = f ? snapshot.adapterState.codecs[f.sourceFieldId] : undefined;
+      const codec = f ? codecFor(snapshot, f) : undefined;
       if (!f?.sortable || !["asc", "desc"].includes(s.direction) || !codec)
         fail("EXTERNAL_QUERY_UNSUPPORTED");
       return {
