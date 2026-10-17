@@ -119,7 +119,7 @@ test("unsupported projected values become null instead of failing the whole reco
   malformed.properties.When.date = { start: "not-a-date", end: null };
   assert.equal(projectRecord(s, malformed).data[date.key], null);
 });
-test("multi_select maps to enum_list and files remain provider-hosted references", async () => {
+test("multi_select maps to a non-nullable enum_list and files remain provider-hosted references", async () => {
   const expanded = structuredClone(schema);
   expanded.properties.Tags = {
     id: "tags",
@@ -138,6 +138,7 @@ test("multi_select maps to enum_list and files remain provider-hosted references
   const files = s.fields.find((field) => field.sourceFieldId === "files");
   const uid = s.fields.find((field) => field.sourceFieldId === "uid");
   assert.equal(tags.type, "enum_list");
+  assert.equal(tags.nullable, false);
   assert.deepEqual(tags.values, ["A", "B"]);
   assert.deepEqual(tags.operators, ["contains"]);
   assert.equal(tags.sortable, false);
@@ -182,6 +183,10 @@ test("multi_select maps to enum_list and files remain provider-hosted references
   assert.deepEqual(translateWrite(s, { [tags.key]: ["B", "A"] }), {
     tags: { multi_select: [{ name: "B" }, { name: "A" }] },
   });
+  assert.throws(() => translateWrite(s, { [tags.key]: null }), ProviderError);
+  const unavailableTags = structuredClone(pageValue);
+  unavailableTags.properties.Tags.multi_select = null;
+  assert.deepEqual(projectRecord(s, unavailableTags).data[tags.key], []);
   assert.deepEqual(
     translateQuery(s, { filter: { field: tags.key, op: "contains", value: "A" } }).filter,
     { property: "tags", multi_select: { contains: "A" } },

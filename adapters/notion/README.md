@@ -29,9 +29,9 @@ Provider `property.id` is emitted as `sourceFieldId` and remains the durable Ada
 | number | number | yes | ceiling | comparisons/null; provider sort | |
 | checkbox | boolean | yes | ceiling | eq/ne; provider sort | |
 | select, status with bounded known options | enum | yes | ceiling | eq/ne/null; provider sort | option name is canonical value |
-| multi_select with bounded known options | enum_list | yes | ceiling | contains; no sort | unique option-name array |
+| multi_select with bounded known options | enum_list | yes | ceiling | contains; no sort | non-nullable unique option-name array; empty selection is `[]` |
 | created_time, last_edited_time | instant | yes | no | comparisons; provider sort | read-only |
-| unique_id | string | yes | no | none | read-only |
+| unique_id | string | yes | no | none | optional Provider property; read-only when present |
 | date | date | yes | ceiling | comparisons/null; provider sort | Start Date projection |
 | files | file_ref_list | yes | no | none | Provider-hosted references only; bytes remain in Notion |
 | relation | — | no | no | no | Notion-internal relation, intentionally omitted |
@@ -56,6 +56,10 @@ empty                                           -> null
 
 The Adapter takes the `YYYY-MM-DD` prefix from the Provider `start`; it does not convert the instant to UTC first. Read, filter and sort therefore share the same Start Date semantics. A LifeSpace write sets Notion `start = YYYY-MM-DD` with no `end` or time.
 
+### Multi-select
+
+`multi_select` projects to a canonical `enum_list`. The list itself is non-nullable: no selected options are represented as `[]`, not `null`. LifeSpace therefore rejects a `null` write for this field. If a weak Provider response unexpectedly omits the option array while the property family is still `multi_select`, the Adapter projects the unavailable list value to `[]` rather than changing the whole Record contract. A real property-family/schema change still fails closed.
+
 ### Files
 
 `files` projects read-only to `file_ref_list`:
@@ -72,14 +76,19 @@ The Adapter takes the `YYYY-MM-DD` prefix from the Provider `start`; it does not
 
 For Notion-hosted files, the current signed URL and expiry are returned. For external files, the original URL is returned without fabricated expiry. File bytes are never copied into LifeSpace/R2 and signed URLs are not treated as durable file identity.
 
-### Metadata
+### Metadata mapping / 元数据映射
 
-- `property.name -> title`
-- `property.description -> description` when provided
-- `property.id -> sourceFieldId`
-- select/status/multi_select options -> canonical `values`
-- `nullable`, `readOnly`, writable/filter/sort capability may be Adapter-derived from explicit Notion semantics
-- color, number format, formula expression, rollup config and other Provider-only implementation/UI metadata do not enter Canonical `FieldDefinition`
+| Provider metadata | Canonical target | Classification | Notes |
+| --- | --- | --- | --- |
+| `property.id` | `sourceFieldId` | provider-native | stable Provider identity; never a public Record field name |
+| `property.name` | `title` | provider-native | rename may change title, not LifeSpace key |
+| `property.description` | `description` | provider-native | mapped when non-empty and within canonical bound |
+| select/status/multi_select options | `values` | provider-native | bounded by canonical enum limits |
+| nullable | `nullable` | adapter-derived | derived from explicit Notion value semantics; multi_select is non-nullable list semantics |
+| provider mutability | `readOnly` / `writable` | adapter-derived | e.g. created_time/unique_id/files are not writable |
+| Provider filter/sort support | `operators` / `sortable` | adapter-derived | only capabilities actually executable by Notion are advertised |
+| color, number format, formula expression, rollup config | — | provider-only | UI/implementation metadata does not enter Canonical `FieldDefinition` |
+| relation/people/provider-user semantics | — | unsupported | intentionally omitted rather than inventing LifeSpace identity semantics |
 
 Unsupported Provider field types never enter the compatible snapshot. For supported projections, missing/unavailable Provider values are returned according to the canonical nullable/list semantics rather than turning one weak-schema value into a whole-record contract failure. Reads still validate the Provider property family against the snapshot so an actual schema change is not silently coerced.
 

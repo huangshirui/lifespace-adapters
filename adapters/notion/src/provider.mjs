@@ -153,7 +153,7 @@ export async function projectSchema(schema, connection) {
       title: p.name,
       ...(description ? { description } : {}),
       type,
-      nullable: p.type !== "checkbox",
+      nullable: !["checkbox", "multi_select"].includes(p.type),
       ...(providerWritable ? {} : { readOnly: true }),
       readable: true,
       writable: providerWritable && connection.write === true,
@@ -261,7 +261,7 @@ export function translateWrite(snapshot, input) {
     } else if (codec.type === "select" || codec.type === "status")
       translated = value === null ? null : { name: value };
     else if (codec.type === "multi_select")
-      translated = value === null ? [] : value.map((name) => ({ name }));
+      translated = value.map((name) => ({ name }));
     else if (codec.type === "date")
       translated = value === null ? null : { start: value, end: null };
     result[codec.id] = { [codec.type]: translated };
@@ -272,9 +272,9 @@ function projectPropertyValue(field, codec, raw) {
   if (codec.type === "title" || codec.type === "rich_text") return text(raw);
   if (codec.type === "select" || codec.type === "status") return raw?.name ?? null;
   if (codec.type === "multi_select") {
-    if (!Array.isArray(raw)) return null;
+    if (!Array.isArray(raw)) return [];
     const values = raw.map((entry) => entry?.name);
-    return values.every((value) => typeof value === "string") ? values : null;
+    return values.every((value) => typeof value === "string") ? values : [];
   }
   if (codec.type === "date") return raw?.start ? dateOnly(raw.start) : null;
   if (codec.type === "unique_id") {
