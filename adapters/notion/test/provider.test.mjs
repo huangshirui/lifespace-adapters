@@ -463,3 +463,121 @@ test("timestamp filters use provider timestamp shape and unsupported deep nestin
     (e) => e.code === "EXTERNAL_QUERY_UNSUPPORTED",
   );
 });
+
+
+test("files advertise separate upload capability only under a write connection", async () => {
+  const writable = await projectSchema(schema, connection);
+  const fileField = writable.fields.find((field) => field.sourceFieldId === "files");
+  assert.equal(fileField.readOnly, true);
+  assert.equal(fileField.writable, false);
+  assert.deepEqual(fileField.upload, { supported: true, maxBytes: 20 * 1024 * 1024 });
+  const readOnly = await projectSchema(schema, { token: "synthetic-test-only", read: true, write: false });
+  assert.equal(readOnly.fields.find((field) => field.sourceFieldId === "files").upload, undefined);
+});
+
+test("upload transfers staged bytes, preserves existing files and appends one Notion file_upload", async () => {
+  const s = await projectSchema(schema, connection);
+  const files = s.fields.find((field) => field.sourceFieldId === "files");
+  const current = structuredClone(record);
+  current.properties.Files.files = [
+    { name: "external.pdf", type: "external", external: { url: "https://example.com/external.pdf" } },
+    { name: "hosted.pdf", type: "file", file: { url: "https://signed.example.com/hosted.pdf", expiry_time: "2026-10-17T16:00:00Z" } },
+  ];
+  const updated = structuredClone(current);
+  updated.properties.Files.files.push({
+    name: "new.txt",
+    type: "file",
+    file: { url: "https://signed.example.com/new.txt", expiry_time: "2026-10-17T16:10:00Z" },
+  });
+  const sourceUrl = "https://11111111111111111111111111111111.r2.cloudflarestorage.com/staging/object?X-Amz-Signature=abc";
+  const calls = [];
+  const p = createNotionProvider({
+    fetch: async (url, init = {}) => {
+      calls.push({ url, init });
+      if (url === sourceUrl) return new Response(new TextEncoder().encode("hello"), { headers: { "content-length": "5", "content-type": "text/plain" } });
+      if (url.endsWith("/pages/" + page) && init.method === "PATCH") return reply(updated);
+      if (url.endsWith("/pages/" + page)) return reply(current);
+      if (url.endsWith("/file_uploads")) return reply({ object: "file_upload", id: "upl-notion-1", status: "pending" });
+      if (url.endsWith("/file_uploads/upl-notion-1/send")) {
+        assert(init.body instanceof FormData);
+        const uploaded = init.body.get("file");
+        assert(uploaded instanceof Blob);
+        assert.equal(uploaded.size, 5);
+        assert.equal(init.headers["content-type"], undefined);
+        return reply({ object: "file_upload", id: "upl-notion-1", status: "uploaded" });
+      }
+      if (init.method === "PATCH") return reply(updated);
+      throw new Error(`unexpected request ${init.method ?? "GET"} ${url}`);
+    },
+    sleep: async () => {},
+    spacingMs: 0,
+  });
+  const result = await p.execute(connection, input("upload", s, {
+    recordId: "rec_external_" + resource + "_" + page,
+    input: { fieldKey: files.key, sourceUrl, name: "new.txt", contentType: "text/plain", size: 5 },
+  }));
+  assert.equal(result.data[files.key].length, 3);
+  const patch = calls.find((call) => call.init.method === "PATCH");
+  assert(patch);
+  const body = JSON.parse(patch.init.body);
+  assert.deepEqual(body.properties.files.files, [
+    { name: "external.pdf", type: "external", external: { url: "https://example.com/external.pdf" } },
+    { name: "hosted.pdf", type: "file", file: { url: "https://signed.example.com/hosted.pdf", expiry_time: "2026-10-17T16:00:00Z" } },
+    { type: "file_upload", file_upload: { id: "upl-notion-1" }, name: "new.txt" },
+  ]);
+  assert.equal(calls.some((call) => call.init.method === "HEAD"), false);
+});
+
+test("upload validates record/field/source before mutating Notion", async () => {
+  const s = await projectSchema(schema, connection);
+  const files = s.fields.find((field) => field.sourceFieldId === "files");
+  const sourceUrl = "https://11111111111111111111111111111111.r2.cloudflarestorage.com/staging/object?X-Amz-Signature=abc";
+  const foreign = structuredClone(record);
+  foreign.parent.data_source_id = "10000000000000000000000000000002";
+  let calls = 0;
+  const p = createNotionProvider({
+    fetch: async () => { calls += 1; return reply(foreign); },
+    sleep: async () => {}, spacingMs: 0,
+  });
+  await assert.rejects(
+    p.execute(connection, input("upload", s, {
+      recordId: "rec_external_" + resource + "_" + page,
+      input: { fieldKey: files.key, sourceUrl, name: "new.txt", contentType: "text/plain", size: 5 },
+    })),
+    (error) => error.code === "EXTERNAL_RESOURCE_UNAVAILABLE",
+  );
+  assert.equal(calls, 1);
+  await assert.rejects(
+    p.execute(connection, input("upload", s, {
+      recordId: "rec_external_" + resource + "_" + page,
+      input: { fieldKey: files.key, sourceUrl: "https://example.com/not-staging", name: "new.txt", contentType: "text/plain", size: 5 },
+    })),
+    (error) => error.code === "EXTERNAL_VALIDATION_FAILED",
+  );
+  assert.equal(calls, 1);
+});
+
+test("uncertain Notion upload send is never retried", async () => {
+  const s = await projectSchema(schema, connection);
+  const files = s.fields.find((field) => field.sourceFieldId === "files");
+  const sourceUrl = "https://11111111111111111111111111111111.r2.cloudflarestorage.com/staging/object?X-Amz-Signature=abc";
+  let sendAttempts = 0;
+  const p = createNotionProvider({
+    fetch: async (url, init = {}) => {
+      if (url === sourceUrl) return new Response(new TextEncoder().encode("hello"), { headers: { "content-length": "5" } });
+      if (url.endsWith("/pages/" + page)) return reply(record);
+      if (url.endsWith("/file_uploads")) return reply({ object: "file_upload", id: "upl-notion-2", status: "pending" });
+      if (url.endsWith("/file_uploads/upl-notion-2/send")) { sendAttempts += 1; throw new Error("timeout"); }
+      throw new Error(`unexpected request ${init.method ?? "GET"} ${url}`);
+    },
+    sleep: async () => {}, spacingMs: 0,
+  });
+  await assert.rejects(
+    p.execute(connection, input("upload", s, {
+      recordId: "rec_external_" + resource + "_" + page,
+      input: { fieldKey: files.key, sourceUrl, name: "new.txt", contentType: "text/plain", size: 5 },
+    })),
+    (error) => error.code === "EXTERNAL_WRITE_UNKNOWN" && error.retrySafe === false,
+  );
+  assert.equal(sendAttempts, 1);
+});
