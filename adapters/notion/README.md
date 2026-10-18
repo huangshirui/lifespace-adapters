@@ -94,6 +94,8 @@ A write-enabled Dynamic Connection may additionally advertise `upload: { support
 
 Unsupported Provider field types never enter the compatible snapshot. For supported projections, missing/unavailable Provider values are returned according to the canonical nullable/list semantics rather than turning one weak-schema value into a whole-record contract failure. Reads still validate the Provider property family against the snapshot so an actual schema change is not silently coerced.
 
+External record IDs use the immutable Notion Data Source UUID as the Provider-resource namespace: `rec_external_<dataSourceUUID>_<pageUUID>`. Two Data Sources containing the same Page UUID must never yield the same LifeSpace ID. Connection rotation, Provider rename and schema refresh must not remap public IDs. The Core contract also requires new Providers to namespace IDs by a stable Provider-qualified resource identity and rejects conflicting cross-binding identity ownership atomically. Existing Notion IDs are kept byte-for-byte stable.
+
 Get/update/delete verify page parent data-source membership before access/mutation. Stable records use `rec_external_<dataSourceUUID>_<pageUUID>`; no fake Native version.
 
 Query pushes at most two levels of AND/OR typed filters, ordered Provider property sorting and <=100 row cursor pages. No client filtering/scan. Provider live ordering/null placement/tie behavior is not a Native ordering guarantee. Trash is delete semantics; no permanent Provider destruction. Create is one API call; update/delete use a parent-validation GET then PATCH. Read-only connection writes fail closed.
