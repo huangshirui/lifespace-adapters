@@ -25,6 +25,10 @@ export function uuid(value) {
     fail();
   return value.replaceAll("-", "").toLowerCase();
 }
+// The Notion Data Source UUID is the stable Provider-resource namespace;
+// the Page UUID is only resource-local identity. Do not derive a public ID from
+// the Page UUID alone or from a mutable Connection/credential/display name.
+// Existing rec_external_<dataSourceUUID>_<pageUUID> IDs must never be rewritten.
 const recordId = (resource, id) => `rec_external_${resource}_${uuid(id)}`;
 function pageId(id, resource) {
   if (

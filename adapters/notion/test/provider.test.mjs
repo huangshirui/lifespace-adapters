@@ -48,6 +48,25 @@ const input = (operation, snapshot, extra = {}) => ({
   ...(snapshot ? { snapshot } : {}),
   ...extra,
 });
+test("record identities are resource namespaced and remain stable across renames", async () => {
+  const first = await projectSchema(schema, connection);
+  const renamed = structuredClone(schema);
+  renamed.title = [{ plain_text: "Renamed only" }];
+  const updated = await projectSchema(renamed, connection);
+  const other = { ...first, resourceId: "10000000000000000000000000000002" };
+  const otherPage = structuredClone(record);
+  otherPage.parent.data_source_id = other.resourceId;
+  const expected = `rec_external_${resource}_${page}`;
+  assert.equal(projectRecord(first, record).id, expected);
+  assert.equal(projectRecord(updated, record).id, expected);
+  assert.equal(
+    projectRecord(other, otherPage).id,
+    `rec_external_10000000000000000000000000000002_${page}`,
+  );
+  assert.notEqual(projectRecord(other, otherPage).id, expected);
+  assert.throws(() => projectRecord(other, record), { code: "EXTERNAL_RESOURCE_UNAVAILABLE" });
+});
+
 test("only supported types survive and source identity remains stable across provider rename/type changes", async () => {
   const first = await projectSchema(schema, connection);
   assert.equal(first.fields.length, 4);
