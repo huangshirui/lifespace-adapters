@@ -100,10 +100,9 @@ test("refuses to construct an MCP handler without a verified authorizer", () => 
   assert.throws(() => createAuthenticatedMcpHttpHandler(), /authorizeRequest/u);
 });
 
-test("unknown endpoint, general entrypoint, and cross-origin request fail closed", async () => {
+test("unknown endpoint and cross-origin request fail closed", async () => {
   const handle = createAuthenticatedMcpHttpHandler({ authorizeRequest: async () => trustedContext() });
   assert.equal((await handle(request("/mcp/health", "tools/list"))).status, 404);
-  assert.equal((await handle(request("/mcp", "tools/list"))).status, 501);
   assert.equal((await handle(request("/mcp/calendar", "tools/list", {}, { Origin: "https://evil.example" }))).status, 403);
 });
 
@@ -164,5 +163,62 @@ test("a stale client cannot call hidden Tasks through the Calendar endpoint", as
   assert.equal(res.status, 200);
   const packet = await readProtocol(res);
   assert.ok(packet.error || packet.result?.isError);
+  assert.equal(executed, false);
+});
+
+test("general MCP exposes only task discovery and generic query, without model schemas", async () => {
+  const handle = createAuthenticatedMcpHttpHandler({ authorizeRequest: async () => trustedContext() });
+  const res = await handle(request("/mcp", "tools/list"));
+  assert.equal(res.status, 200);
+  const packet = await readProtocol(res);
+  assert.deepEqual(packet.result.tools.map((tool) => tool.name), [
+    "lifespace.find_capabilities", "lifespace.query_records",
+  ]);
+});
+
+test("general MCP resolves Chinese task intent without loading unrelated tool schemas", async () => {
+  const handle = createAuthenticatedMcpHttpHandler({ authorizeRequest: async () => trustedContext() });
+  const res = await handle(request("/mcp", "tools/call", {
+    name: "lifespace.find_capabilities", arguments: { intent: "今天有哪些日程？" },
+  }));
+  assert.equal(res.status, 200);
+  const packet = await readProtocol(res);
+  const capabilities = JSON.parse(packet.result.content[0].text).capabilities;
+  assert.deepEqual(capabilities.map((c) => c.modelKey), ["event"]);
+  assert.deepEqual(capabilities[0].spaces.map((s) => s.spaceId), ["spc_visible"]);
+});
+
+test("general MCP queries only a current readable Space with canonical typed filters", async () => {
+  let executed;
+  const handle = createAuthenticatedMcpHttpHandler({
+    authorizeRequest: async () => trustedContext({ onExecute: (op) => { executed = op; } }),
+  });
+  const res = await handle(request("/mcp", "tools/call", {
+    name: "lifespace.query_records",
+    arguments: {
+      modelKey: "event", spaceId: "spc_visible",
+      filters: [{ field: "when", operator: "overlaps", value: {
+        kind: "local_date_window", startDate: "2026-10-29", endDateExclusive: "2026-10-30", timezone: "Asia/Shanghai",
+      } }],
+    },
+  }));
+  const packet = await readProtocol(res);
+  assert.equal(packet.result?.isError, undefined);
+  assert.match(packet.result.content[0].text, /rec_synthetic/u);
+  assert.equal(executed.path, "/api/v1/spaces/spc_visible/models/event/records/query");
+});
+
+test("generic model access is denied after Core inventory removes read access", async () => {
+  const revoked = structuredClone(inventory);
+  revoked.data.spaces[0].models[0].access = [];
+  let executed = false;
+  const handle = createAuthenticatedMcpHttpHandler({
+    authorizeRequest: async () => trustedContext({ inventoryValue: revoked, onExecute: () => { executed = true; } }),
+  });
+  const res = await handle(request("/mcp", "tools/call", {
+    name: "lifespace.query_records", arguments: { modelKey: "event", spaceId: "spc_visible" },
+  }));
+  const packet = await readProtocol(res);
+  assert.equal(packet.result.isError, true);
   assert.equal(executed, false);
 });
