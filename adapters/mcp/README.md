@@ -2,7 +2,7 @@
 
 This directory owns the concrete MCP（Model Context Protocol，模型上下文协议） adapter for LifeSpace.
 
-Current status: **Canonical Query Projection Core implemented and tested; MCP Server / transport / deployment runtime not implemented yet**.
+Current status: **Canonical Query Projection Core implemented and tested; Calendar/Tasks Virtual Domain projection implemented (CI pending); MCP Server / OAuth / transport / deployment runtime not implemented yet**.
 
 The current M0 code proves the protocol-independent path:
 
@@ -24,6 +24,8 @@ Files:
 
 - `src/progressive-discovery.mjs` loads compact inventory plus only selected semantic details and fails closed when `key/version/schemaHash` drift;
 - `src/projection.mjs` projects `query.canonical` into one smaller MCP Tool per selected model and builds Canonical Query POST requests;
+- `src/domain-projection.mjs` resolves stable logical MCP URL paths, narrows Core-authorized inventory to Calendar or Tasks, and invokes the existing Query Projection without creating new authority;
+- `test/domain-projection.test.mjs` covers endpoint isolation, read-only pruning, stale schema rejection and Native/External model-key collisions;
 - `test/projection.test.mjs` proves Progressive Discovery bounds, Agent-friendly Search/filters/Sort/Pagination, optional `advancedFilter`, range forwarding and Space isolation;
 - `test/projection-fail-closed.test.mjs` proves unsupported or stale semantics are rejected.
 
@@ -52,7 +54,7 @@ The adapter must:
 
 The projection consumes the current LifeSpace Canonical Query semantic descriptor, including Search + Filter intersection semantics, typed filter targets/operators, ordered Sort and cursor Pagination. Legacy query metadata does not generate a second MCP query surface and is not maintained as a compatibility mode.
 
-It deliberately does **not** choose an MCP SDK, HTTP transport, OAuth profile or deployment runtime.
+The Virtual Domain projection is not a new Model Registry, OAuth scope vocabulary, authorization service, or live MCP HTTP endpoint. It deliberately does **not** choose an MCP SDK, HTTP transport, OAuth profile or deployment runtime.
 
 See [`../../docs/mcp-adapter.md`](../../docs/mcp-adapter.md) before extending implementation.
 
