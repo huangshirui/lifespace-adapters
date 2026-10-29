@@ -82,15 +82,17 @@ The repository is moving from **contract alignment** into the first verified ada
 - Public-repository safety baseline: defined.
 - Canonical LifeSpace contract-consumption rules: defined.
 - MCP Canonical Query Projection Core: **implemented and tested** against synthetic current Canonical Query semantic fixtures.
-- MCP read-only Virtual Domain selection (Calendar / Tasks): **implemented and under CI verification**, with stable path profiles and authority-pruned query projection. This is a pure projection layer, not a deployed HTTP server.
-- MCP Server / transport / OAuth integration: **not implemented yet**.
+- MCP read-only Virtual Domain selection (Calendar / Tasks): **implemented and under CI verification**, with stable path profiles and authority-pruned query projection.
+- MCP Stateless Streamable HTTP handling: **implemented behind an injected trusted authorizer, undergoing CI verification**; no deployable Worker entrypoint or OAuth authorization bridge yet.
+- General MCP entrypoint: **implemented as two read-only tools** (task-scoped capability search + dynamic Canonical Query), undergoing CI verification.
+- Interactive OAuth, real LifeSpace execution-context binding, and remote deployment: **not implemented yet**.
 - Deployment runtime: **not selected yet**.
 
 The implemented projection covers Progressive Discovery loading, exactly one Canonical Query Tool per selected model, an Agent-friendly default schema (`search`, flat typed `filters[]`, ordered `sort[]`, `limit`, `cursor`), optional `advancedFilter` for nested Boolean expressions, typed temporal/range operands, Space-scoped execution bindings and canonical modelKey-addressed POST request construction.
 
 Search and Filter are projected as parallel candidate-selection facets and compile to the same Canonical Query. Legacy Generic/Capability query metadata does not create a second MCP surface and is not preserved as an adapter compatibility mode.
 
-The next milestone is to bind query and domain projection to a real authenticated Stateless MCP server/transport without changing the LifeSpace-owned semantic or authorization boundary.
+The next milestone is to connect the SDK v2 HTTP handler to a genuine OAuth/Identity authorization bridge that produces a caller-bound LifeSpace execution context, then verify revocation and end-to-end staging behavior. No public endpoint can be exposed before this bridge is tested.
 
 ## Documentation（文档）
 
