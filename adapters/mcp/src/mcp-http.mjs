@@ -20,6 +20,14 @@ function sameOrigin(request) {
   }
 }
 
+function requireCoreSuccess(result) {
+  if (!result || typeof result !== "object" || Array.isArray(result)
+    || !Object.hasOwn(result, "data") || Object.hasOwn(result, "error")) {
+    throw new Error("Core did not return a success envelope");
+  }
+  return result;
+}
+
 function trustedContext(value) {
   return value && typeof value === "object"
     && typeof value.fetchJson === "function"
@@ -99,7 +107,7 @@ export function createAuthenticatedMcpHttpHandler({ authorizeRequest } = {}) {
           try {
             const binding = await resolveGeneralQueryBinding({ fetchJson: context.fetchJson, modelKey, spaceId });
             const operation = buildLifeSpaceQueryRequest(binding, { spaceId, ...args });
-            const result = await context.executeQuery(operation);
+            const result = requireCoreSuccess(await context.executeQuery(operation));
             return { content: [{ type: "text", text: JSON.stringify(result) }] };
           } catch {
             return { isError: true, content: [{ type: "text", text: "LifeSpace query denied or unavailable" }] };
@@ -125,7 +133,7 @@ export function createAuthenticatedMcpHttpHandler({ authorizeRequest } = {}) {
               }
               // The authenticated executor MUST call Core to recheck current
               // access; a cached MCP tools/list is never authorization proof.
-              const result = await context.executeQuery(operation);
+              const result = requireCoreSuccess(await context.executeQuery(operation));
               return { content: [{ type: "text", text: JSON.stringify(result) }] };
             } catch {
               return {
@@ -138,6 +146,9 @@ export function createAuthenticatedMcpHttpHandler({ authorizeRequest } = {}) {
       }
       return server;
     });
-    return handler.fetch(request);
+    const result = await handler.fetch(request);
+    const headers = new Headers(result.headers);
+    headers.set("Cache-Control", "private, no-store");
+    return new Response(result.body, { status: result.status, headers });
   };
 }
