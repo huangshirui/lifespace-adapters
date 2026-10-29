@@ -60,14 +60,16 @@ function readableEdge(edge) {
  */
 export function selectDomainInventory(inventoryValue, domain) {
   const inventory = object(inventoryValue, "inventory");
+  if (typeof domain !== "string" || !Object.hasOwn(DOMAIN_PROFILES, domain)) fail("unknown domain");
   const profile = DOMAIN_PROFILES[domain];
-  if (!profile) fail("unknown domain");
   if (!Array.isArray(inventory.models) || !Array.isArray(inventory.spaces)) {
     fail("inventory must contain models and spaces");
   }
-  const eligible = inventory.models.filter((entry) => matchesProfile(object(entry, "model entry"), profile));
+  const allModels = inventory.models.map((entry) => object(entry, "model entry"));
+  const eligible = allModels.filter((entry) => matchesProfile(entry, profile));
+  const selectedKeys = new Set(eligible.map((entry) => entry.key));
   const originByKey = new Map();
-  for (const entry of eligible) {
+  for (const entry of allModels.filter((model) => selectedKeys.has(model.key))) {
     if (typeof entry.key !== "string" || !entry.key) fail("invalid model key");
     if (entry.origin === "external" && (typeof entry.spaceId !== "string" || !entry.spaceId)) {
       fail("external model has no Space identity");
@@ -95,11 +97,7 @@ export function selectDomainInventory(inventoryValue, domain) {
     space.models.some((edge) => edge.modelKey === entry.key)
       && (entry.origin !== "external" || space.spaceId === entry.spaceId),
   ));
-  return {
-    ...inventory,
-    models: selectedModels,
-    spaces,
-  };
+  return { ...inventory, models: selectedModels, spaces };
 }
 
 /**
