@@ -84,6 +84,7 @@ jobs:
         run: |
           node --check adapters/mcp/src/progressive-discovery.mjs
           node --check adapters/mcp/src/projection.mjs
+          node --check adapters/mcp/src/domain-projection.mjs
       - name: Test MCP projection core
         run: node --test adapters/mcp/test/*.test.mjs
 
