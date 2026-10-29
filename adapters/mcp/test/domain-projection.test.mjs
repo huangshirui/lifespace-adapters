@@ -142,7 +142,7 @@ test("a Native capability match cannot leak an unrelated External Space with the
     key: "event", origin: "external", spaceId: "spc_c", schemaHash: "3".repeat(64),
     display: { singular: "Provider event", plural: "Provider events" },
   });
-  assert.throws(() => selectDomainInventory(source, "calendar"), /ambiguous Native\\/External/u);
+  assert.throws(() => selectDomainInventory(source, "calendar"), /ambiguous Native\/External/u);
 });
 
 test("unknown profiles and invalid inventory fail closed", () => {
