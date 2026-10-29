@@ -86,6 +86,7 @@ jobs:
           node --check adapters/mcp/src/projection.mjs
           node --check adapters/mcp/src/domain-projection.mjs
           node --check adapters/mcp/src/mcp-http.mjs
+          node --check adapters/mcp/src/general-discovery.mjs
       - name: Install official MCP Server SDK v2
         working-directory: adapters/mcp
         run: npm install --ignore-scripts --no-audit --no-fund
