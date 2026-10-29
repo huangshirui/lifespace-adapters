@@ -2,7 +2,7 @@
 
 LifeSpace Adapters is the protocol-adaptation layer around LifeSpace. It translates canonical LifeSpace contracts and current capability projections into external protocol surfaces without becoming a second source of truth for LifeSpace semantics, authorization, or domain models.
 
-The first adapter is MCP（Model Context Protocol，模型上下文协议）. Future protocol adapters may be added only when they have a real consumer and a clear boundary.
+The Notion provider adapter was implemented before the MCP server. MCP（Model Context Protocol，模型上下文协议） is the first outward-facing protocol adapter planned here. Future protocol adapters may be added only when they have a real consumer and a clear boundary.
 
 ## Open-source and public-repository safety model（开源与公开仓库安全模型）
 
