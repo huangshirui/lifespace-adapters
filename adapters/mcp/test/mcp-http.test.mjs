@@ -222,3 +222,33 @@ test("generic model access is denied after Core inventory removes read access", 
   assert.equal(packet.result.isError, true);
   assert.equal(executed, false);
 });
+
+test("authenticated tool listing is always marked private and non-cacheable", async () => {
+  const handle = createAuthenticatedMcpHttpHandler({ authorizeRequest: async () => trustedContext() });
+  const res = await handle(request("/mcp/calendar", "tools/list"));
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("cache-control"), "private, no-store");
+  assert.deepEqual((await readProtocol(res)).result.tools.map((t) => t.name), ["lifespace.query.event"]);
+});
+
+test("Core error envelope is never returned as a successful tool result", async () => {
+  const handle = createAuthenticatedMcpHttpHandler({
+    authorizeRequest: async () => ({
+      ...trustedContext(),
+      executeQuery: async () => ({ error: { code: "FORBIDDEN" } }),
+    }),
+  });
+  const res = await handle(request("/mcp", "tools/call", {
+    name: "lifespace.query_records", arguments: { modelKey: "event", spaceId: "spc_visible" },
+  }));
+  const packet = await readProtocol(res);
+  assert.equal(packet.result.isError, true);
+  assert.doesNotMatch(packet.result.content[0].text, /FORBIDDEN/u);
+});
+
+test("query parameters cannot switch Calendar to Tasks tools", async () => {
+  const handle = createAuthenticatedMcpHttpHandler({ authorizeRequest: async () => trustedContext() });
+  const res = await handle(request("/mcp/calendar?domain=tasks", "tools/list"));
+  const packet = await readProtocol(res);
+  assert.deepEqual(packet.result.tools.map((tool) => tool.name), ["lifespace.query.event"]);
+});
