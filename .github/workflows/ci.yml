@@ -84,7 +84,13 @@ jobs:
         run: |
           node --check adapters/mcp/src/progressive-discovery.mjs
           node --check adapters/mcp/src/projection.mjs
-      - name: Test MCP projection core
+          node --check adapters/mcp/src/domain-projection.mjs
+          node --check adapters/mcp/src/mcp-http.mjs
+          node --check adapters/mcp/src/general-discovery.mjs
+      - name: Install official MCP Server SDK v2
+        working-directory: adapters/mcp
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Test MCP projection core and HTTP adapter
         run: node --test adapters/mcp/test/*.test.mjs
 
   secret-scan:

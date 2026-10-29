@@ -8,7 +8,7 @@ The MCP Adapter projects the current LifeSpace capability surface into MCP witho
 
 ## Current implementation status（当前实现状态）
 
-The verified implementation slice is a deployment-independent **Canonical Query Projection Core**. It does not yet provide an MCP Server, HTTP transport, OAuth integration or deployment package.
+The verified initial implementation is a **Canonical Query Projection Core**. Subsequent read-only work adds virtual domain projection, general capability discovery and an SDK v2 Stateless Streamable HTTP handler requiring a caller-bound authorizer. **Interactive OAuth, the trusted LifeSpace execution context bridge, a deployable Worker entrypoint and staging are still not implemented.**
 
 ```text
 MCP-facing adapter layer
@@ -111,6 +111,22 @@ The future MCP Server must use credentials for the real execution context. It mu
 
 Platform Admin / Console control-plane operations are excluded from ordinary MCP discovery and fallback routing.
 
+## Hybrid Virtual MCP Domains（混合式逻辑 MCP 领域）
+
+**Design: approved; pure V1 domain query projection implemented, HTTP/OAuth still pending.**
+
+One eventual public MCP Worker may expose a general `/mcp` endpoint and dedicated `/mcp/calendar`, `/mcp/tasks` endpoints. These paths name logical protocol surfaces, not separate LifeSpace applications, Space identities, D1 databases or grants. The first code slice implements `resolveMcpEndpoint`, `selectDomainInventory` and `projectDomainQuerySurface`; it deliberately does **not** claim to implement the HTTP handler, OAuth, or a usable ChatGPT plugin.
+
+- **Domain Profiles belong to this MCP adapter**, as protocol-specific display narrowing. The V1 profiles are `calendar` (matches an already-declared `calendar` capability) and `tasks` (matches the published `task` model key). Additional domains are candidates, not registered working endpoints.
+- **Domain classification is not authorization.** Every candidate must already be in the current authenticated `/api/v1/me/_discovery/inventory`, with a readable Space edge. `tools/call` must still revalidate authority with LifeSpace Core. There are no `calendar:read`/`tasks:read` LifeSpace permission scopes; continue using existing `resources:read/write/manage` as applicable.
+- **Route identity is stable.** Domain selection is by exact path (`/mcp/calendar`, `/mcp/tasks`), not arbitrary query parameters or caller-asserted domain headers. A future Worker must reject unknown paths and verify OAuth Token resource/audience for the exact protected resource; multiple routes may share an authorization server.
+- **Queries only in V1.** Read permission and `query.canonical` are required. Writes, actions, Kernel Person Directory, control plane and unmanaged model operations are not projected. General `/mcp` is reserved for an eventual minimal capability-search/query entry point, **not** a wildcard that emits all models.
+- **Progressive narrowing only.** First filter the already-authorization-pruned coarse inventory; fetch semantic details only for selected models, retaining the existing key/version/schemaHash drift checks, then call the existing `projectSelectedModelsToMcp` implementation. No parallel field semantics, time conversion or permission evaluator is introduced.
+- **External models are Space-specific.** An External `modelKey` can have different schema hashes in two Spaces; the existing projection gives it a Space-qualified tool. If Native and External inventories reuse one selected model key, this V1 selection explicitly fails closed instead of mixing their execution edges. A future fine-grained identifier-based loader may remove that compatibility limit after explicit contract tests.
+- **Clients and cache.** MCP servers do not observe the user's current chat question at `tools/list`; available domain tools can depend on URL and authenticated inventory, not the last tool invocation. Clients may cache metadata. For unsupported clients, the general endpoint will eventually use a small, stable discovery surface, never a claimed implicit `tools/list` mutation.
+
+The current implementation is protocol/transport independent. Next milestone: authenticated MCP SDK v2 Stateless Streamable HTTP with OAuth approval and end-to-end deny/revocation tests before any public Worker deployment.
+
 ## Protocol surface（协议表面）
 
 Projection output is deterministic and MCP-safe:
@@ -121,7 +137,7 @@ Projection output is deterministic and MCP-safe:
 - no dependence on a transport session;
 - no Standard Query / Capability Query mode exposed to the Agent.
 
-Server lifecycle, actual `tools/list` / `tools/call` handlers, OAuth, cache hints, result envelopes and deployment remain future work.
+The read-only SDK v2 HTTP handler now implements `tools/list` and `tools/call` for authenticated injected contexts, exposes only two general task-scoped tools at `/mcp`, and uses direct Calendar/Tasks query tools on domain endpoints. The handler returns `401` when authorization is absent, rejects cross-Origin requests, denies unknown paths, requires LifeSpace success envelopes, and marks caller-specific responses `Cache-Control: private, no-store`. OAuth validation, deployment, durable credentials, client-identity mapping, resource metadata and end-to-end live contract checks remain future work.
 
 ## Verification（验证）
 
