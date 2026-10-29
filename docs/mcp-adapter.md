@@ -8,7 +8,7 @@ The MCP Adapter projects the current LifeSpace capability surface into MCP witho
 
 ## Current implementation status（当前实现状态）
 
-The verified implementation slice is a deployment-independent **Canonical Query Projection Core**. It does not yet provide an MCP Server, HTTP transport, OAuth integration or deployment package.
+The verified initial implementation is a **Canonical Query Projection Core**. Subsequent read-only work adds virtual domain projection, general capability discovery and an SDK v2 Stateless Streamable HTTP handler requiring a caller-bound authorizer. **Interactive OAuth, the trusted LifeSpace execution context bridge, a deployable Worker entrypoint and staging are still not implemented.**
 
 ```text
 MCP-facing adapter layer
@@ -137,7 +137,7 @@ Projection output is deterministic and MCP-safe:
 - no dependence on a transport session;
 - no Standard Query / Capability Query mode exposed to the Agent.
 
-Server lifecycle, actual `tools/list` / `tools/call` handlers, OAuth, cache hints, result envelopes and deployment remain future work.
+The read-only SDK v2 HTTP handler now implements `tools/list` and `tools/call` for authenticated injected contexts, exposes only two general task-scoped tools at `/mcp`, and uses direct Calendar/Tasks query tools on domain endpoints. The handler returns `401` when authorization is absent, rejects cross-Origin requests, denies unknown paths, requires LifeSpace success envelopes, and marks caller-specific responses `Cache-Control: private, no-store`. OAuth validation, deployment, durable credentials, client-identity mapping, resource metadata and end-to-end live contract checks remain future work.
 
 ## Verification（验证）
 
