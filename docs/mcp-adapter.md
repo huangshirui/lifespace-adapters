@@ -8,7 +8,7 @@ The MCP Adapter projects the current LifeSpace capability surface into MCP witho
 
 ## Current implementation status（当前实现状态）
 
-The verified implementation slice is a deployment-independent **Canonical Query Projection Core**. It does not yet provide an MCP Server, HTTP transport, OAuth integration or deployment package.
+The verified projection slice is the **Canonical Query Projection Core**. A **read-only Cloudflare Worker MCP resource server** has been added as an MVP deployment candidate; live Cloudflare Managed OAuth E2E is not yet validated.
 
 ```text
 MCP-facing adapter layer
@@ -121,7 +121,7 @@ Projection output is deterministic and MCP-safe:
 - no dependence on a transport session;
 - no Standard Query / Capability Query mode exposed to the Agent.
 
-Server lifecycle, actual `tools/list` / `tools/call` handlers, OAuth, cache hints, result envelopes and deployment remain future work.
+The new Worker handles stateless `initialize`, `ping`, `tools/list`, `tools/call` as MCP Streamable HTTP JSON responses. It accepts only Cloudflare Access JWT assertions, exchanges them at Identity using the existing trusted Application contract for a short-lived `resources:read` User token, and calls Core only with that token. Cloudflare Managed OAuth is the OAuth Authorization Server. Core authority is checked for fresh discovery and again during execution. No per-client OAuth Scope management or write tools are claimed. Deployment and live E2E remain pending.
 
 ## Verification（验证）
 
