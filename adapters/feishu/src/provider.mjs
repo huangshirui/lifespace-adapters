@@ -197,7 +197,8 @@ export function createFeishuProvider({ fetch: fetcher = fetch } = {}) {
     const data = {};
     for (const field of snapshot.fields) {
       const codec = codecFor(snapshot, field);
-      if (!Object.hasOwn(row.fields, codec.name)) bad("EXTERNAL_SCHEMA_CHANGED", 409);
+      // Feishu omits empty cells from record.fields (including unchecked checkboxes).
+      // Absence is not evidence that the schema changed; use canonical nullable/list defaults.
       data[field.key] = canonicalValue(field, row.fields[codec.name]);
     }
     const createdAt = iso(row.created_time), updatedAt = iso(row.last_modified_time);
