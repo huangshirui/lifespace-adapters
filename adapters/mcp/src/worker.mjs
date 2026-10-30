@@ -170,8 +170,18 @@ export async function handleMcpRequest(request, env, fetcher = fetch) {
       if (result.error) throw new Error(result.error);
       return result.payload;
     };
-    // Fresh, effective Core authority is the only discovery source; no cross-user cache.
-    const selection = await loadSelectedModelSemantics({ fetchJson, selectedModelKeys: modelKeys });
+    // First inventory filters configured model choices by *current* effective visibility.
+    // An inaccessible model disappears from tools/list rather than breaking the entire list.
+    const inventoryResponse = await fetchJson("/api/v1/me/_discovery/inventory");
+    const visibleKeys = new Set(
+      (inventoryResponse?.data?.spaces ?? []).flatMap(space =>
+        (space.models ?? []).filter(model => model.access?.includes("read")).map(model => model.modelKey)
+      )
+    );
+    const selectedVisible = modelKeys.filter(key => visibleKeys.has(key));
+    const selection = selectedVisible.length
+      ? await loadSelectedModelSemantics({ fetchJson, selectedModelKeys: selectedVisible, inventoryResponse })
+      : { models: [] };
     const projected = projectSelectedModelsToMcp(selection);
     if (message.method === "tools/list") {
       if (message.params && (typeof message.params !== "object" || Object.keys(message.params).some(k => k !== "cursor"))) {
