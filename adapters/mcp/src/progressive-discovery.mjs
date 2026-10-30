@@ -37,11 +37,11 @@ function sameIdentity(inventoryModel, detail) {
     && detail.schemaHash === inventoryModel.schemaHash;
 }
 
-export async function loadSelectedModelSemantics({ fetchJson, selectedModelKeys }) {
+export async function loadSelectedModelSemantics({ fetchJson, selectedModelKeys, inventoryResponse }) {
   if (typeof fetchJson !== "function") fail("fetchJson must be a function");
   if (!Array.isArray(selectedModelKeys) || selectedModelKeys.length === 0) fail("selectedModelKeys must be a non-empty array");
   const selected = [...new Set(selectedModelKeys)].sort();
-  const inventory = unwrap(await fetchJson("/api/v1/me/_discovery/inventory"), "inventory response");
+  const inventory = unwrap(inventoryResponse ?? await fetchJson("/api/v1/me/_discovery/inventory"), "inventory response");
   if (!Array.isArray(inventory.models) || !Array.isArray(inventory.spaces)) fail("inventory must contain models and spaces arrays");
 
   const models = [];
