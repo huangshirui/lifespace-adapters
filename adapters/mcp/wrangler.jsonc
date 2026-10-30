@@ -1,0 +1,9 @@
+{
+  // PUBLIC TEMPLATE ONLY. Never put live routes, Access AUD, account IDs or secrets in git.
+  "name": "example-lifespace-mcp",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2026-10-30",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true }
+}
