@@ -179,3 +179,32 @@ test("identity transport fails safely and never uses service principal credentia
   assert.equal(response.status, 503);
   assert.equal(client.requests.length, 0);
 });
+
+
+test("currently unreadable configured model is hidden rather than advertised", async () => {
+  const client = makeClient();
+  const restrictedFetcher = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/api/v1/me/_discovery/inventory") {
+      client.requests.push({ host: url.host, path: url.pathname, headers: init.headers });
+      const invisible = inventory();
+      invisible.data.spaces[0].models[0].access = [];
+      return Response.json(invisible);
+    }
+    return client.fetcher(input, init);
+  };
+  const result = await handleMcpRequest(rpc("tools/list", {}), env, restrictedFetcher);
+  assert.equal(result.status, 200);
+  assert.deepEqual((await result.json()).result.tools, []);
+  assert.equal(client.requests.filter(r => r.path.includes("_discovery/models")).length, 0);
+});
+
+test("MCP does not surface mutation methods or OAuth Token passthrough", async () => {
+  const client = makeClient();
+  const result = await handleMcpRequest(rpc("tools/call", {
+    name: "lifespace.delete.task",
+    arguments: { spaceId: "spc_example" },
+  }), env, client.fetcher);
+  assert.equal((await result.json()).error.code, -32602);
+  assert.equal(client.requests.some(x => x.method === "DELETE"), false);
+});
