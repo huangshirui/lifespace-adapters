@@ -1,0 +1,29 @@
+{
+  "name": "example-feishu-provider-local",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [{ "name": "CONNECTIONS", "class_name": "FeishuConnectionVault" }]
+  },
+  "migrations": [
+    { "tag": "v1-feishu-connections", "new_sqlite_classes": ["FeishuConnectionVault"] }
+  ],
+  "env": {
+    "staging": {
+      "name": "example-feishu-provider-staging",
+      "workers_dev": false,
+      "preview_urls": false,
+      "routes": [],
+      "durable_objects": { "bindings": [{ "name": "CONNECTIONS", "class_name": "FeishuConnectionVault" }] }
+    },
+    "production": {
+      "name": "example-feishu-provider-production",
+      "workers_dev": false,
+      "preview_urls": false,
+      "routes": [],
+      "durable_objects": { "bindings": [{ "name": "CONNECTIONS", "class_name": "FeishuConnectionVault" }] }
+    }
+  }
+}

@@ -115,3 +115,8 @@ Sensitive vulnerabilities must not be reported through public Issue / PR content
 ## Provider adapters / 外部数据适配器
 
 `adapters/notion` consumes LifeSpace External Adapter contract v1 and projects Notion data-source schema/records into the Core-owned compatible model. It owns Provider API/Secret/query/rate-limit behavior, has no LifeSpace D1/ACL, and is separate from outward-facing MCP projection. See `adapters/notion/README.md`. Tests use synthetic data; no deployment is claimed.
+
+
+## Feishu Bitable provider / 飞书多维表格 Provider
+
+`adapters/feishu` implements the provider-neutral External Adapter v1 boundary for a Feishu Bitable Base and its tables. It uses an encrypted per-Connection vault and Feishu OAuth v3 tenant tokens. Synthetic tests cover field/record projection, isolation and error semantics. **Not deployed / 未部署**. See `adapters/feishu/README.md` for supported fields and the current Console credential format.
