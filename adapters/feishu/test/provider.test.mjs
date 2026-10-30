@@ -162,3 +162,24 @@ test("private worker requires Core secret and never sends credential to output",
   assert(!(await authorized.text()).includes(connection.appSecret));
   assert.equal(seen[0].id, ref);
 });
+
+
+test("Feishu omitted empty cells map to null, [] and false without schema-change errors", async () => {
+  const p = createFeishuProvider({ fetch: async (url, init) => {
+    const address = String(url);
+    if (address.includes("/oauth/v3/token")) return Response.json({ access_token: "mock-token" });
+    if (address.endsWith("/tables?page_size=100")) return ok({ items: [{ table_id: table, name: "Synthetic Table" }] });
+    if (address.includes("/fields?")) return ok({ items: fields, has_more: false });
+    if (address.includes("/records?")) {
+      return ok({ items: [{ record_id: row, fields: { Name: "Only Name" } }], has_more: false });
+    }
+    throw Error("unrecognized synthetic request: " + address);
+  } });
+  const snapshot = await discover(p);
+  const result = await p.execute(connection, command("query", { snapshot }));
+  const values = result.items[0].data;
+  for (const field of snapshot.fields) {
+    const expected = field.type === "enum_list" ? [] : field.type === "boolean" ? false : field.type === "text" ? "Only Name" : null;
+    assert.deepEqual(values[field.key], expected);
+  }
+});
