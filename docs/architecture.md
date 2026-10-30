@@ -119,7 +119,7 @@ When upstream metadata describes a semantic capability but omits a composition r
 
 The first implementation slice deliberately separates **projection semantics** from **server runtime/transport**.
 
-Implemented now:
+Implemented projection core:
 
 ```text
 Progressive inventory/detail loader
@@ -145,15 +145,16 @@ advancedFilter? -> nested Canonical Boolean AST when genuinely needed
 
 `filters[]` and `advancedFilter` are mutually exclusive. Range/local-date-window values remain typed and are passed through for Core-owned time semantics. There is no Generic Query / Capability Query mode in the protocol surface.
 
-Not implemented yet:
+MCP read-only Worker MVP (candidate, not yet live-verified):
 
 ```text
-MCP HTTP/server lifecycle
-OAuth / credential acquisition
-remote deployment runtime
-actual tools/list + tools/call transport handlers
-mutation/action projection
+Cloudflare Access Managed OAuth → verified Access assertion
+Identity /internal/v1/access/tokens → short-lived User JWT (resources:read)
+Core progressive discovery → MCP tools/list
+Core Canonical Query → MCP tools/call
 ```
+
+Mutation/action projection, per-OAuth-client fine-grained Scope/Consent and deployment E2E remain unimplemented. Access OAuth login is the protocol boundary; neither this repo nor Identity creates a second user OAuth server for this MVP.
 
 This split keeps code review focused on whether LifeSpace semantics are projected correctly before transport choices add more moving parts.
 
