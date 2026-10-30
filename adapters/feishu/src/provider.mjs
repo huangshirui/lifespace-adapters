@@ -21,7 +21,8 @@ export function parseResource(value) {
 const pathFor = (r) => "/bitable/v1/apps/" + encodeURIComponent(r.base) + "/tables/" + encodeURIComponent(r.table);
 const iso = v => {
   if (v === undefined || v === null) return undefined;
-  const date = new Date(typeof v === "number" || /^\d{13}$/.test(String(v)) ? Number(v) : v);
+  const number = typeof v === "number" || /^\d{10,13}$/.test(String(v)) ? Number(v) : null;
+  const date = new Date(number === null ? v : number < 1e11 ? number * 1000 : number);
   return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
 };
 async function hash(value) {
@@ -136,7 +137,7 @@ export function createFeishuProvider({ fetch: fetcher = fetch } = {}) {
     const fields = [], codecs = {};
     for (const raw of rawFields) {
       const spec = mapping.get(raw.type);
-      if (!spec || !tokenId(raw.field_id) || typeof raw.field_name !== "string" || !raw.field_name) continue;
+      if (!spec || !tokenId(raw.field_id) || typeof raw.field_name !== "string" || !raw.field_name || raw.field_name.length > 80) continue;
       const [type, providerWritable] = spec;
       let values;
       if (type === "enum" || type === "enum_list") {
