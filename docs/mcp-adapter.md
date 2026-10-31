@@ -8,7 +8,7 @@ The MCP Adapter projects the current LifeSpace capability surface into MCP witho
 
 ## Current implementation status（当前实现状态）
 
-The verified implementation slice is a deployment-independent **Canonical Query Projection Core**. It does not yet provide an MCP Server, HTTP transport, OAuth integration or deployment package.
+The verified projection slice is the **Canonical Query Projection Core**. A **read-only Cloudflare Worker MCP resource server** has been added as an MVP deployment candidate; live Cloudflare Managed OAuth E2E is not yet validated.
 
 ```text
 MCP-facing adapter layer
@@ -121,7 +121,7 @@ Projection output is deterministic and MCP-safe:
 - no dependence on a transport session;
 - no Standard Query / Capability Query mode exposed to the Agent.
 
-Server lifecycle, actual `tools/list` / `tools/call` handlers, OAuth, cache hints, result envelopes and deployment remain future work.
+The new Worker handles stateless `initialize`, `ping`, `tools/list`, `tools/call` as MCP Streamable HTTP JSON responses. It accepts only Cloudflare Access JWT assertions, exchanges them at Identity using the existing trusted Application contract for a short-lived `resources:read` User token, and calls Core only with that token. Cloudflare Managed OAuth is the OAuth Authorization Server. Core authority is checked for fresh discovery and again during execution. No per-client OAuth Scope management or write tools are claimed. Deployment and live E2E remain pending.
 
 ## Verification（验证）
 
@@ -139,3 +139,12 @@ Synthetic tests prove:
 10. filter depth/node, sort and pagination bounds are rechecked at execution mapping.
 
 The next milestone is a real MCP Server / transport binding around this projection core.
+## Worker Previews deployment target（部署目标）
+
+The read-only Data MCP runtime is developed under `adapters/mcp`, independently of the Notion provider and future protocol adapters. Standard repository CI runs tests but has no deployment trigger; a code-only MCP edit cannot deploy another adapter.
+
+The target Staging path uses Cloudflare Worker Previews on `workers.dev`, with `wrangler >=4.135.0` and generated, untracked Preview-only `IDENTITY` / `CORE` Service Bindings. These must resolve to the Staging target Workers' **regular deployments**, because Cloudflare Preview service bindings do not automatically point to other Previews. A Preview also requires its own `LIFESPACE_APPLICATION_CREDENTIAL` secret, Managed OAuth Access protection, and Access AUD registration to the existing LifeSpace Staging Application.
+
+Future Console/Platform Admin MCP functionality may share low-level MCP protocol code, but must not share this read-only MCP security context: it requires a separate protected Worker and a separately approved human admin Actor Proof plus controlled Executor, not `resources:read` or a model-key setting.
+
+Keep the already-provisioned custom-domain Staging Worker as rollback until verified live OAuth → Identity User → Core Query with negative authorization tests. A Preview config/CI pass alone does not constitute that verification. See `../adapters/mcp/README.md` for a deployment and cutover checklist.

@@ -119,7 +119,7 @@ When upstream metadata describes a semantic capability but omits a composition r
 
 The first implementation slice deliberately separates **projection semantics** from **server runtime/transport**.
 
-Implemented now:
+Implemented projection core:
 
 ```text
 Progressive inventory/detail loader
@@ -145,15 +145,16 @@ advancedFilter? -> nested Canonical Boolean AST when genuinely needed
 
 `filters[]` and `advancedFilter` are mutually exclusive. Range/local-date-window values remain typed and are passed through for Core-owned time semantics. There is no Generic Query / Capability Query mode in the protocol surface.
 
-Not implemented yet:
+MCP read-only Worker MVP (candidate, not yet live-verified):
 
 ```text
-MCP HTTP/server lifecycle
-OAuth / credential acquisition
-remote deployment runtime
-actual tools/list + tools/call transport handlers
-mutation/action projection
+Cloudflare Access Managed OAuth → verified Access assertion
+Identity /internal/v1/access/tokens → short-lived User JWT (resources:read)
+Core progressive discovery → MCP tools/list
+Core Canonical Query → MCP tools/call
 ```
+
+Mutation/action projection, per-OAuth-client fine-grained Scope/Consent and deployment E2E remain unimplemented. Access OAuth login is the protocol boundary; neither this repo nor Identity creates a second user OAuth server for this MVP.
 
 This split keeps code review focused on whether LifeSpace semantics are projected correctly before transport choices add more moving parts.
 
@@ -193,3 +194,11 @@ Applications such as ALOHA and HomeMew consume LifeSpace/adapter capabilities un
 ## Provider-facing direction / 面向数据源的适配方向
 
 #340 adds `adapters/notion` as a provider-facing adapter: Core authorizes first, calls a fixed private service boundary, and the adapter executes only the provider operation. It consumes the LifeSpace-owned external-adapter contract v1; it never enumerates LifeSpace users, reads D1, creates Grants or defines model semantics. Provider native schema is projected to supported canonical fields only. This is the reverse transport direction from outward-facing MCP, while retaining the same pure-adapter ownership rule.
+
+## MCP security profiles and deployment separation（安全投影与部署隔离）
+
+The MCP Worker is reusable as **a protocol/transport runtime**, but ordinary Query/Data and future Console/Platform Admin capabilities are different security profiles, not interchangeable model selections. A Console MCP endpoint needs a distinct authorization profile, dedicated Worker/Access application and LifeSpace Platform Admin human actor proof plus executor. Such an endpoint is **not implemented** and is not automatically enabled by this Data MCP Adapter.
+
+Each adapter deploys separately under its own subdirectory. The CI for this repository runs cross-adapter tests but never deploys an adapter. The outward-facing MCP adapter's desired Staging mechanism is **Cloudflare Workers Previews** on a `workers.dev` URL, with no public production Worker route, a dedicated managed-OAuth Access policy and a read-only Application. Deployment-time settings and secret material are provisioned outside the public repository. In particular Preview Service Bindings target the destination Worker's regular deployed version, so MCP Preview must bind only Staging Identity/Core deployments, not the same-name target's Preview or a Production target.
+
+The earlier custom-domain Staging instance stays available only for controlled rollback until Preview OAuth + Identity + Core data authorization is tested. A passing CI test is not end-to-end client evidence.
