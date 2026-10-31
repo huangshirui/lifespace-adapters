@@ -85,6 +85,7 @@ jobs:
           node --check adapters/mcp/src/progressive-discovery.mjs
           node --check adapters/mcp/src/projection.mjs
           node --check adapters/mcp/src/worker.mjs
+          node --check adapters/mcp/scripts/build-preview-config.mjs
       - name: Test MCP projection and Managed OAuth Worker
         run: node --test adapters/mcp/test/*.test.mjs
 
