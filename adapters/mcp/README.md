@@ -107,7 +107,7 @@ MVP smoke acceptance requires **real evidence**: OAuth discovery → browser log
 
 ### No extra LifeSpace provisioning action
 
-The existing manually provisioned LifeSpace Application and its limited `resources:read` credential can remain valid. The former one-time GitHub workflow that installed it into a legacy Staging Worker is **not a routine MCP deployment workflow**; do not run it on code changes. New Preview secrets live in **Cloudflare Previews Base** (or an individual Preview), not in a cross-repository CI deployment secret. A one-time secure entry of the existing trusted Application credential into Previews Base is necessary because Cloudflare does not disclose or automatically inherit the old Worker Secret.
+The existing manually provisioned LifeSpace Application and its limited `resources:read` credential can remain valid. The former one-time GitHub workflow that installed it into a legacy Staging Worker is **not a routine MCP deployment workflow**; do not run it on code changes. New Preview secrets live in the **specific trusted `staging` Preview only**, not in public CI or Previews Base. Cloudflare does not disclose or automatically inherit the old Worker Secret. Never put personal-data credentials in the Preview Base: other branch previews could inherit them.
 
 ### Deployment shape（部署形态）
 
@@ -121,7 +121,7 @@ The existing manually provisioned LifeSpace Application and its limited `resourc
 
 1. Create a parent MCP Worker with no public production route and configure Worker Preview URLs at a new, dedicated `workers.dev` hostname. Do not repurpose the legacy staging custom domain until new E2E is verified.
 2. Configure a **Preview Worker** Cloudflare Access application (or one dedicated to that precise Preview hostname) with **Managed OAuth enabled** and only approved test users. Record its *new* AUD privately, and register that AUD under the existing MCP Application using **LifeSpace Staging Console**. Do not assume the old custom-domain Access AUD automatically applies to Preview URLs.
-3. In the Cloudflare Worker **Previews Base** Secrets, install the same dedicated, revocable `LIFESPACE_APPLICATION_CREDENTIAL` (`lsa_*`) already approved for read-only MCP. No token should be pasted into this public repository, CI logs, or a PR. Secret updates to Previews Base affect **new** Previews; for an existing Preview, use an explicitly scoped Preview secret update.
+3. In the **specific `staging` Preview**, install the dedicated, revocable `LIFESPACE_APPLICATION_CREDENTIAL` (`lsa_*`) approved for read-only MCP. Use Cloudflare Dashboard or `wrangler preview secret put LIFESPACE_APPLICATION_CREDENTIAL --name staging --worker-name <worker>` from a trusted operator computer; it creates a new Preview deployment. Do **not** set this secret in `Previews Base` (other branch previews could inherit it), the public repository, CI logs, or a PR.
 4. Set deploy-only environment values `MCP_WORKER_NAME`, `MCP_PREVIEW_IDENTITY_SERVICE`, `MCP_PREVIEW_CORE_SERVICE`, and optional `MCP_PREVIEW_MODEL_KEYS`. Identity/Core must point to separate known **Staging-only** deployed Workers. The generator rejects target names not ending in `-staging` but this naming check is not a substitute for verifying actual Cloudflare resources.
 5. Build the effective, **untracked** Wrangler configuration and deploy only this MCP Preview (not any other Adapter):
    ```sh
@@ -130,7 +130,7 @@ The existing manually provisioned LifeSpace Application and its limited `resourc
      --config adapters/mcp/.wrangler.preview.generated.json \
      --name staging
    ```
-   If Wrangler requires an existing parent Worker, bootstrap **that parent only** once with its production route disabled; never run a production Worker deploy as a side effect of Preview code changes. Cloudflare's Git integration/Builds can run these same commands for trusted branches after Access and Preview Base are configured, eliminating a separate temporary GitHub Action.
+   If Wrangler requires an existing parent Worker, bootstrap **that parent only** once with its production route disabled; never run a production Worker deploy as a side effect of Preview code changes. Cloudflare's Git integration/Builds can run these same commands for trusted branches **without copying the staging credential into CI** after Access is configured. Restrict credential-bearing previews to the trusted staging name; never allow arbitrary fork PR code to inherit the staging secret. No separate temporary GitHub credential-installation Action is needed.
 6. Accept the Preview only after live OAuth discovery/browser sign-in, Access JWT audience exchange to a linked `usr_*`, `initialize`, allowed `tools/list`, actual `tools/call`, and denied/revoked-principal testing. An Access prompt or successful CI alone is not enough.
 
 ### Migration / Cutover（迁移与回退）
