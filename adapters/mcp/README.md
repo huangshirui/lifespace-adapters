@@ -2,7 +2,7 @@
 
 This directory owns the concrete MCP（Model Context Protocol，模型上下文协议） adapter for LifeSpace.
 
-Current status: **Canonical Query Projection Core tested; read-only Remote MCP Worker MVP candidate implemented; live OAuth/Deployment verification pending**.
+Current status: **Canonical Query Projection Core tested; read-only Remote MCP Worker deployed as isolated earlier Staging candidate; Worker Previews migration planned/implemented in deployment config but not live-verified**.
 
 The current M0 code proves the protocol-independent path:
 
