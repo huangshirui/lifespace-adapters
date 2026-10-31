@@ -83,7 +83,7 @@ The repository is moving from **contract alignment** into the first verified ada
 - Canonical LifeSpace contract-consumption rules: defined.
 - MCP Canonical Query Projection Core: **implemented and tested** against synthetic current Canonical Query semantic fixtures.
 - MCP read-only Streamable HTTP Worker MVP: **implemented as candidate; OAuth live E2E pending**.
-- MCP deployment runtime: **Cloudflare Workers template**, without live route, credentials or deployment claim.
+- MCP deployment runtime: **Cloudflare Workers with isolated Worker Previews candidate** (generated environment-specific bindings, no committed live topology); real Preview OAuth E2E remains pending.
 
 The implemented projection covers Progressive Discovery loading, exactly one Canonical Query Tool per selected model, an Agent-friendly default schema (`search`, flat typed `filters[]`, ordered `sort[]`, `limit`, `cursor`), optional `advancedFilter` for nested Boolean expressions, typed temporal/range operands, Space-scoped execution bindings and canonical modelKey-addressed POST request construction.
 
