@@ -139,3 +139,12 @@ Synthetic tests prove:
 10. filter depth/node, sort and pagination bounds are rechecked at execution mapping.
 
 The next milestone is a real MCP Server / transport binding around this projection core.
+## Worker Previews deployment target（部署目标）
+
+The read-only Data MCP runtime is developed under `adapters/mcp`, independently of the Notion provider and future protocol adapters. Standard repository CI runs tests but has no deployment trigger; a code-only MCP edit cannot deploy another adapter.
+
+The target Staging path uses Cloudflare Worker Previews on `workers.dev`, with `wrangler >=4.135.0` and generated, untracked Preview-only `IDENTITY` / `CORE` Service Bindings. These must resolve to the Staging target Workers' **regular deployments**, because Cloudflare Preview service bindings do not automatically point to other Previews. A Preview also requires its own `LIFESPACE_APPLICATION_CREDENTIAL` secret, Managed OAuth Access protection, and Access AUD registration to the existing LifeSpace Staging Application.
+
+Future Console/Platform Admin MCP functionality may share low-level MCP protocol code, but must not share this read-only MCP security context: it requires a separate protected Worker and a separately approved human admin Actor Proof plus controlled Executor, not `resources:read` or a model-key setting.
+
+Keep the already-provisioned custom-domain Staging Worker as rollback until verified live OAuth → Identity User → Core Query with negative authorization tests. A Preview config/CI pass alone does not constitute that verification. See `../adapters/mcp/README.md` for a deployment and cutover checklist.
