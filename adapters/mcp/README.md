@@ -2,7 +2,7 @@
 
 This directory owns the concrete MCP（Model Context Protocol，模型上下文协议） adapter for LifeSpace.
 
-Current status: **Canonical Query Projection Core and read-only MCP Worker tested; legacy isolated Staging Worker deployed; Workers Previews deployment template added but new Preview OAuth E2E not yet verified**.
+Current status: **Canonical Query Projection Core and read-only MCP Worker tested; Cloudflare Workers Preview staging deployed with isolated Identity/Core bindings, dedicated Preview credential and Managed OAuth. Real client OAuth → Identity → Core query E2E is not yet verified**.
 
 The current M0 code proves the protocol-independent path:
 
@@ -64,17 +64,17 @@ The first deployment candidate is a read-only, stateless Streamable HTTP MCP Res
 
 ### Trust and API flow（可信链路）
 
-1. Cloudflare Access guards the **currently configured hostname** with Managed OAuth and injects `Cf-Access-Jwt-Assertion`. The legacy custom-domain Worker is rollback-only; the target is a separately protected `workers.dev` Preview.
+1. Cloudflare Access guards the **dedicated `workers.dev` Preview URL** with Managed OAuth and injects `Cf-Access-Jwt-Assertion`. The previously used custom-domain Worker and Access app have been retired.
 2. MCP Worker passes the **original assertion**, with its own server-only `lsa_*`, to Identity `POST /internal/v1/access/tokens`, requesting **only** `resources:read`.
 3. Identity independently checks issuer, RSA signature, audience registered to that LifeSpace Application, `usr_*` mapping and credential scope ceiling. A first-time unlinked principal **fails closed**; never automatically create or merge an account.
 4. The short-lived **LifeSpace user JWT** is sent server-to-server to Core inventory, semantic detail and canonical query APIs. The Cloudflare OAuth access token is never passed through to Core.
 5. Core provides fresh effective Discovery and **rechecks** current Space / Data Grant / Application Model Access and credential scope at execution time. Only read-only `lifespace.query.*` tools are exposed.
 6. MCP OAuth Client ID and per-client custom Scope are **not assumed** to be available from Cloudflare Managed OAuth. The MVP therefore uses a single read-only credential ceiling and Access Policy for the entire protected endpoint. No mutation tools, per-client grants or Agent representation are claimed.
 
-### Legacy deployment prerequisites（仅作回退说明）
+### Runtime deployment prerequisites（Staging Preview）
 
-- The **previous** staging candidate used a custom domain. For the new Preview setup use [Worker Previews and independent deployment](#worker-previews-and-independent-deployment正式改造目标) instead. Never expose an unprotected `*.workers.dev` Preview.
-- The legacy Access application protects only its custom domain; a new Preview Access protection policy and Audience registration are required for Preview traffic.
+- Deploy through the isolated Worker Preview described below. Never expose an unprotected `*.workers.dev` Preview.
+- Cloudflare Access must protect the actual Preview Worker destination with Managed OAuth; register that Preview Access Audience with the intended LifeSpace Application.
 - Create an independent, revocable `lsa_*` for that Application, whose allowed scopes contain `resources:read`. Grant only the desired models **read** access via the existing Core Application Model Access control plane.
 - Inject these Worker variables/secrets through the Cloudflare dashboard or deployment secrets, never commit their values:
   - `LIFESPACE_APPLICATION_CREDENTIAL` **Secret**, Staging `lsa_*`.
@@ -107,7 +107,7 @@ MVP smoke acceptance requires **real evidence**: OAuth discovery → browser log
 
 ### No extra LifeSpace provisioning action
 
-The existing manually provisioned LifeSpace Application and its limited `resources:read` credential can remain valid. The former one-time GitHub workflow that installed it into a legacy Staging Worker is **not a routine MCP deployment workflow**; do not run it on code changes. New Preview secrets live in the **specific trusted `staging` Preview only**, not in public CI or Previews Base. Cloudflare does not disclose or automatically inherit the old Worker Secret. Never put personal-data credentials in the Preview Base: other branch previews could inherit them.
+The dedicated, Console-governed MCP Application must enforce `resources:read`; a newly issued scoped `lsa_*` can be installed into the specific trusted `staging` Preview. The former one-time GitHub credential installer is retired. New Preview secrets live in the **specific trusted `staging` Preview only**, not in public CI or Previews Base. Never put personal-data credentials in the Preview Base: other branch previews could inherit them.
 
 ### Deployment shape（部署形态）
 
@@ -119,8 +119,8 @@ The existing manually provisioned LifeSpace Application and its limited `resourc
 
 ### One-time Cloudflare configuration（一次性）
 
-1. Create a parent MCP Worker with no public production route and configure Worker Preview URLs at a new, dedicated `workers.dev` hostname. Do not repurpose the legacy staging custom domain until new E2E is verified.
-2. Configure a **Preview Worker** Cloudflare Access application (or one dedicated to that precise Preview hostname) with **Managed OAuth enabled** and only approved test users. Record its *new* AUD privately, and register that AUD under the existing MCP Application using **LifeSpace Staging Console**. Do not assume the old custom-domain Access AUD automatically applies to Preview URLs.
+1. Create a parent MCP Worker with no public production route and enable only Access-protected Worker Preview URLs at a dedicated `workers.dev` hostname.
+2. Configure a **Preview Worker** Cloudflare Access application (or one dedicated to the exact Preview hostname) with **Managed OAuth enabled** and only approved test users. Register its AUD privately to the dedicated MCP Application through **LifeSpace Staging Console**. Do not reuse retired custom-domain Access audiences.
 3. In the **specific `staging` Preview**, install the dedicated, revocable `LIFESPACE_APPLICATION_CREDENTIAL` (`lsa_*`) approved for read-only MCP. Use Cloudflare Dashboard or `wrangler preview secret put LIFESPACE_APPLICATION_CREDENTIAL --name staging --worker-name <worker>` from a trusted operator computer; it creates a new Preview deployment. Do **not** set this secret in `Previews Base` (other branch previews could inherit it), the public repository, CI logs, or a PR.
 4. Set deploy-only environment values `MCP_WORKER_NAME`, `MCP_PREVIEW_IDENTITY_SERVICE`, `MCP_PREVIEW_CORE_SERVICE`, and optional `MCP_PREVIEW_MODEL_KEYS`. Identity/Core must point to separate known **Staging-only** deployed Workers. The generator rejects target names not ending in `-staging` but this naming check is not a substitute for verifying actual Cloudflare resources.
 5. Build the effective, **untracked** Wrangler configuration and deploy only this MCP Preview (not any other Adapter):
@@ -135,6 +135,6 @@ The existing manually provisioned LifeSpace Application and its limited `resourc
 
 ### Migration / Cutover（迁移与回退）
 
-The previously configured custom-domain Staging MCP Worker is **rollback only** for now. Do not delete it, remove its Access policy, revoke its credential, or remove a LifeSpace one-off provisioning workflow until the new Preview's Managed OAuth and Model Read authorization are end-to-end accepted. After verification, remove that one-off deployment plumbing through a separately reviewed owner-approved cleanup without touching Production. No ordinary MCP code edit should run or install another adapter.
+The previously configured custom-domain Staging MCP Worker, Access application and one-off LifeSpace credential-installer workflow have been retired by the project owner. The fixed `staging` Preview is now the only staging endpoint. Ensure its **new** credential maps to the intended Console Application/Audience and verify real OAuth → LifeSpace User → authorized Model Query before claiming E2E readiness. No ordinary MCP code edit should deploy another adapter.
 
-**Limitation:** per-OAuth-client custom consent scopes and actual client ID are still not established; both old Staging and new Preview enforce only the limited read-only Application credential ceiling, plus fresh Core authorization.
+**Limitation:** per-OAuth-client custom consent scopes and actual client ID are still not established; the Preview enforces only the limited read-only Application credential ceiling, plus fresh Core authorization.
