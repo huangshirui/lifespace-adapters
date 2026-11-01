@@ -1,0 +1,14 @@
+{
+  // Public template only. Actual Worker/Service names are injected at deploy time,
+  // NEVER committed: this repository contains no live infrastructure metadata.
+  // The production endpoint is deliberately disabled until separately approved.
+  "name": "example-lifespace-mcp",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2026-10-31",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  // Preview resources MUST be independent from production resources.
+  // A deploy-only generator supplies Staging Identity/Core service bindings.
+  "previews": {}
+}

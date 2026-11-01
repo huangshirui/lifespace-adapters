@@ -80,12 +80,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Syntax check MCP projection core
+      - name: Syntax check MCP projection and Managed OAuth Worker
         run: |
           node --check adapters/mcp/src/progressive-discovery.mjs
           node --check adapters/mcp/src/projection.mjs
-      - name: Test MCP projection core
+          node --check adapters/mcp/src/worker.mjs
+          node --check adapters/mcp/scripts/build-preview-config.mjs
+      - name: Test MCP projection and Managed OAuth Worker
         run: node --test adapters/mcp/test/*.test.mjs
+      - name: Dry-run MCP Worker Preview package (synthetic bindings only)
+        env:
+          MCP_WORKER_NAME: example-lifespace-mcp
+          MCP_PREVIEW_IDENTITY_SERVICE: example-identity-staging
+          MCP_PREVIEW_CORE_SERVICE: example-core-staging
+          MCP_PREVIEW_MODEL_KEYS: task,event
+        run: |
+          node adapters/mcp/scripts/build-preview-config.mjs
+          npx --yes --package wrangler@4.135.0 wrangler deploy --dry-run --config adapters/mcp/.wrangler.preview.generated.json --outdir .wrangler/ci-preview-dry-run
+
 
   secret-scan:
     runs-on: ubuntu-latest

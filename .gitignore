@@ -34,3 +34,6 @@ Thumbs.db
 *.log
 .vscode/
 .idea/
+
+# Generated Cloudflare Preview configuration (may contain deployment topology)
+adapters/mcp/.wrangler.preview.generated.json
