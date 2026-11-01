@@ -147,4 +147,4 @@ The target Staging path uses Cloudflare Worker Previews on `workers.dev`, with `
 
 Future Console/Platform Admin MCP functionality may share low-level MCP protocol code, but must not share this read-only MCP security context: it requires a separate protected Worker and a separately approved human admin Actor Proof plus controlled Executor, not `resources:read` or a model-key setting.
 
-Keep the already-provisioned custom-domain Staging Worker as rollback until verified live OAuth → Identity User → Core Query with negative authorization tests. A Preview config/CI pass alone does not constitute that verification. See `../adapters/mcp/README.md` for a deployment and cutover checklist.
+The legacy custom-domain Staging Worker and its Access application have been retired. The protected `workers.dev` Preview is now the Staging endpoint; its newly issued `lsa_*` and Access Audience require real OAuth → Identity User → Core Query acceptance (including negative authorization tests). A Preview config/CI pass alone does not constitute verification. See `../adapters/mcp/README.md` for deployment and acceptance guidance.
