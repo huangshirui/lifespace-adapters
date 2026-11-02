@@ -78,7 +78,9 @@ async function mcp(request, env) {
   if (env?.OAUTH_PROBE_ENABLED !== "true") return response(404, { error: "Not found" });
   if (request.method === "GET") return response(405, { error: "Only POST is supported" });
   if (request.method !== "POST") return response(405, { error: "Method not allowed" });
-  if (request.headers.get("origin")) return response(403, { error: "Cross-origin requests denied" });
+  const origin = request.headers.get("origin");
+  if (origin && !["https://chatgpt.com", "https://claude.ai", "https://claude.com"].includes(origin))
+    return response(403, { error: "Origin not allowed" });
   const assertion = assertionClaims(request.headers.get("cf-access-jwt-assertion"));
   if (!assertion) return response(401, { error: "Cloudflare Access required" });
   if (typeof env.OAUTH_ACCESS_AUD !== "string" || ![].concat(assertion.aud ?? []).includes(env.OAUTH_ACCESS_AUD))
@@ -117,7 +119,7 @@ async function mcp(request, env) {
           error: { code: -32602, message: "Unknown diagnostic tool or arguments" } });
       }
       const testRequest = new Request(url.href + "/__oauth_probe", {
-        method: "POST", headers: request.headers,
+        method: "POST", headers: { "cf-access-jwt-assertion": request.headers.get("cf-access-jwt-assertion") ?? "" },
       });
       const probe = await handle(testRequest, env);
       if (probe.status !== 200) return response(probe.status, { error: "Access probe denied" });
