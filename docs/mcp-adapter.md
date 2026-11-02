@@ -178,3 +178,13 @@ The route must remain protected by **Cloudflare Access Managed OAuth**. The exac
 **Important:** Cloudflare Managed OAuth documents opaque access tokens and a signed *user* assertion forwarded to origins. It does not currently document a reliable end-to-end client identity claim in that assertion. If the probe finds no such claim, do not fabricate one or trust an externally supplied client name; return to the identity/Connection design decision with observed evidence.
 
 Reference: https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/
+
+## Isolated Cloudflare Managed OAuth transport validation (synthetic-only)
+
+The independent test worker at `adapters/mcp/src/isolated-managed-oauth-probe.worker.mjs` is a **throwaway synthetic transport diagnostic**, not the LifeSpace domain MCP Server or Connection authorization implementation. It does not read Identity, Core, user records or credentials. It accepts only two invented Connection paths: `/mcp/calendar/conn_alpha/__oauth_probe` and `/mcp/tasks/conn_beta/__oauth_probe` (plus the inverse synthetic combinations).
+
+Deploy this worker only under its own Cloudflare Access application with Managed OAuth and a restrictive policy, **never the existing LifeSpace MCP Preview**. It requires env `OAUTH_PROBE_ENABLED=true`, `OAUTH_PROBE_KEY` (at least 32 characters, secret injected at deploy time) and `OAUTH_ACCESS_AUD` (the exact Access audience assigned to this test app). Origin must be protected by Access; merely decoding `Cf-Access-Jwt-Assertion` is not signature validation.
+
+The response shows only whether trusted-transport assertion claims contain `client_id`, `oauth_client_id`, `azp`, `grant_id`, `authorization_id`; present string values are HMAC-fingerprinted using the private test key. Never use fingerprints as production identities. Do not log raw assertions, Authorization headers, user claims or bearer tokens.
+
+**Experiment:** authenticate synthetic Client A and Client B via separate DCR registrations; compare claim presence/fingerprints. Using one client token, call both synthetic conn_alpha and conn_beta URLs; a 2xx at both paths means Access did not isolate the Connection paths. An Access 401/403 on cross-path replay is evidence of enforcement for that configuration. Authenticated human login is needed to complete this phase. Disable/remove the probe after collecting results. Do not overstate a missing client_id claim or a client-supplied name as official ChatGPT/Claude attribution.
