@@ -148,3 +148,33 @@ The target Staging path uses Cloudflare Worker Previews on `workers.dev`, with `
 Future Console/Platform Admin MCP functionality may share low-level MCP protocol code, but must not share this read-only MCP security context: it requires a separate protected Worker and a separately approved human admin Actor Proof plus controlled Executor, not `resources:read` or a model-key setting.
 
 The legacy custom-domain Staging Worker and its Access application have been retired. The protected `workers.dev` Preview is now the Staging endpoint; its newly issued `lsa_*` and Access Audience require real OAuth → Identity User → Core Query acceptance (including negative authorization tests). A Preview config/CI pass alone does not constitute verification. See `../adapters/mcp/README.md` for deployment and acceptance guidance.
+
+## Cloudflare Managed OAuth Staging probe (experimental, disabled by default)
+
+> **Not deployed; not a Connection runtime implementation.** This instrument only answers a narrow OAuth-transport question: whether a verified Access assertion contains any client/grant identifier fields. Do not infer Agent identity, Vendor authenticity, or Connection authorization from a `client_id` claim.
+
+An opt-in, no-business-data endpoint is available at the synthetic shape:
+
+```text
+POST /mcp/{domain}/conn_{id}/__oauth_probe
+```
+
+The handler returns 404 unless the deployment injects **both** of these Staging-only settings:
+
+- `MCP_OAUTH_PROBE_ENABLED=true`
+- `MCP_OAUTH_PROBE_KEY`: a random, server-only secret of at least 32 characters; never commit its value
+
+The route must remain protected by **Cloudflare Access Managed OAuth**. The exact incoming Access JWT is first exchanged through the existing Identity token endpoint; a missing or denied assertion returns 401/403. No LifeSpace business data, Core discovery, credential, raw JWT, OAuth bearer, username/email or claim value is returned. The endpoint reports only whether allowlisted claim names are present and a short, HMAC-keyed fingerprint of any present value; untrusted request headers cannot supply the result. Fingerprints only permit *comparison* across test calls and MUST NOT become production identity proof.
+
+**Minimum controlled validation:**
+
+1. Enable the probe on a dedicated Staging Preview protected by Access. Do not enable on Production.
+2. Complete OAuth using two distinct client registrations (e.g., two different MCP clients) for the same signed-in test user.
+3. Invoke the diagnostic through each client's OAuth session. Observe `claimPresence.client_id`, `oauth_client_id`, `azp`, `grant_id` and `authorization_id` without extracting raw values.
+4. Register two distinct resource URLs with different `conn_*` paths. Attempt to reuse the OAuth token authorized for one as the bearer token on the other. **A 403/401 by Cloudflare before the Worker is the expected isolation result.** A successful diagnostic response at both paths means URL path alone has not provided token isolation.
+5. Repeat after token refresh and revoke the test client/session to check stability and invalidation.
+6. Disable the probe and remove its Staging-only secret after recording the conclusion; never interpret it as a permanent public API.
+
+**Important:** Cloudflare Managed OAuth documents opaque access tokens and a signed *user* assertion forwarded to origins. It does not currently document a reliable end-to-end client identity claim in that assertion. If the probe finds no such claim, do not fabricate one or trust an externally supplied client name; return to the identity/Connection design decision with observed evidence.
+
+Reference: https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/
