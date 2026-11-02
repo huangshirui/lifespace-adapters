@@ -67,4 +67,73 @@ export async function handle(request, env) {
   });
 }
 
-export default { fetch: handle };
+// A minimal, synthetic-only Streamable HTTP MCP surface lets ChatGPT/Claude
+// finish their real OAuth handshake and invoke a no-data diagnostic tool.
+const MCP_PATH = /^\/mcp\/(?:calendar|tasks)\/conn_(?:alpha|beta)$/u;
+const TOOL = "inspect_managed_oauth_context";
+
+async function mcp(request, env) {
+  const url = new URL(request.url);
+  if (!MCP_PATH.test(url.pathname)) return response(404, { error: "Not found" });
+  if (env?.OAUTH_PROBE_ENABLED !== "true") return response(404, { error: "Not found" });
+  if (request.method === "GET") return response(405, { error: "Only POST is supported" });
+  if (request.method !== "POST") return response(405, { error: "Method not allowed" });
+  if (request.headers.get("origin")) return response(403, { error: "Cross-origin requests denied" });
+  const assertion = assertionClaims(request.headers.get("cf-access-jwt-assertion"));
+  if (!assertion) return response(401, { error: "Cloudflare Access required" });
+  if (typeof env.OAUTH_ACCESS_AUD !== "string" || ![].concat(assertion.aud ?? []).includes(env.OAUTH_ACCESS_AUD))
+    return response(403, { error: "Unexpected Access audience" });
+
+  const raw = await request.text();
+  if (raw.length > 16000) return response(413, { error: "Oversized test request" });
+  let input;
+  try { input = JSON.parse(raw); } catch { return response(400, { error: "Malformed JSON" }); }
+  if (!input || typeof input !== "object" || Array.isArray(input) ||
+      input.jsonrpc !== "2.0" || typeof input.method !== "string")
+    return response(400, { error: "Invalid JSON RPC request" });
+  if (input.method === "notifications/initialized") return new Response(null, { status: 202 });
+  if (typeof input.id !== "string" && typeof input.id !== "number")
+    return response(400, { error: "Invalid JSON RPC ID" });
+
+  let result;
+  switch (input.method) {
+    case "initialize":
+      result = { protocolVersion: "2025-06-18", capabilities: { tools: { listChanged: false } },
+        serverInfo: { name: "isolated-oauth-transport-probe", version: "0.0.1" } };
+      break;
+    case "ping":
+      result = {};
+      break;
+    case "tools/list":
+      result = { tools: [{ name: TOOL,
+        title: "Inspect Cloudflare Managed OAuth transport (synthetic)",
+        description: "Reports only opaque claim presence/fingerprints and synthetic Connection path. No LifeSpace data or action.",
+        inputSchema: { type: "object", properties: {}, additionalProperties: false } }] };
+      break;
+    case "tools/call": {
+      if (input.params?.name !== TOOL ||
+          !input.params?.arguments || Object.keys(input.params.arguments).length !== 0) {
+        return response(200, { jsonrpc: "2.0", id: input.id,
+          error: { code: -32602, message: "Unknown diagnostic tool or arguments" } });
+      }
+      const testRequest = new Request(url.href + "/__oauth_probe", {
+        method: "POST", headers: request.headers,
+      });
+      const probe = await handle(testRequest, env);
+      if (probe.status !== 200) return response(probe.status, { error: "Access probe denied" });
+      result = { content: [{ type: "text", text: JSON.stringify(await probe.json()) }], isError: false };
+      break;
+    }
+    default:
+      return response(200, { jsonrpc: "2.0", id: input.id,
+        error: { code: -32601, message: "Unsupported synthetic MCP method" } });
+  }
+  return new Response(JSON.stringify({ jsonrpc: "2.0", id: input.id, result }), {
+    status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+  });
+}
+
+export default { fetch(request, env) {
+  return MCP_PATH.test(new URL(request.url).pathname) ? mcp(request, env) : handle(request, env);
+} };
+
