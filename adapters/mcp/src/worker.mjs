@@ -1,5 +1,6 @@
 import { loadSelectedModelSemantics } from "./progressive-discovery.mjs";
 import { buildLifeSpaceQueryRequest, projectSelectedModelsToMcp } from "./projection.mjs";
+import { handleStagingOAuthProbe, matchesStagingOAuthProbe } from "./oauth-staging-probe.mjs";
 
 // MVP: Cloudflare Access Managed OAuth is the OAuth Authorization Server.
 // This Worker is only an MCP Resource Server. Identity independently verifies
@@ -118,6 +119,13 @@ function isValidId(id) {
 
 export async function handleMcpRequest(request, env, fetcher = fetch) {
   const url = new URL(request.url);
+  if (matchesStagingOAuthProbe(url.pathname)) {
+    if (!allowedOrigin(request, env)) return reject(403, "Origin is not allowed");
+    // A separate, opt-in, no-data route for Staging OAuth observation only.
+    // It never reaches Core or changes the production MCP Tool surface.
+    return handleStagingOAuthProbe(request, env, assertion =>
+      exchangeUserToken(assertion, env, fetcher));
+  }
   if (url.pathname !== MCP_PATH) return reject(404, "Not found");
   if (!allowedOrigin(request, env)) return reject(403, "Origin is not allowed");
   if (request.method === "GET" || request.method === "DELETE") return reject(405, "MCP is stateless and POST-only");
