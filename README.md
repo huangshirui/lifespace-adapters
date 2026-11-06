@@ -82,7 +82,7 @@ The repository is moving from **contract alignment** into the first verified ada
 - Public-repository safety baseline: defined.
 - Canonical LifeSpace contract-consumption rules: defined.
 - MCP Canonical Query Projection Core: **implemented and tested** against synthetic current Canonical Query semantic fixtures.
-- MCP OAuth Protected Resource Server: **Identity OAuth-based candidate, synthetically tested, not deployed**. OAuth exact-resource introspection and the Identity-issued, single-Space Agent Direct Core bridge now support candidate read-only `tools/list` and `tools/call`; live deployment/E2E remain pending.
+- MCP OAuth Protected Resource Server: **Core mcp_* URL-aware Identity OAuth candidate, synthetically tested, not deployed**. OAuth exact-resource introspection and the Identity-issued, single-Space Agent Direct Core bridge now support candidate read-only `tools/list` and `tools/call`; live deployment/E2E remain pending.
 - MCP production/staging runtime: **not yet provisioned**; CI dry-runs a synthetic separate Identity OAuth Resource Server only. The old Cloudflare Access Managed OAuth Worker Preview implementation and deployment generator have been removed.
 
 The implemented projection covers Progressive Discovery loading, exactly one Canonical Query Tool per selected model, an Agent-friendly default schema (`search`, flat typed `filters[]`, ordered `sort[]`, `limit`, `cursor`), optional `advancedFilter` for nested Boolean expressions, typed temporal/range operands, Space-scoped execution bindings and canonical modelKey-addressed POST request construction.
