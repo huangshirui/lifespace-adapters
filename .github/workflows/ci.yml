@@ -54,11 +54,16 @@ jobs:
             packages/domain/README.md
             packages/mcp/README.md
             schemas/v0.1/README.md
+            adapters/mcp/src/worker.mjs
+            adapters/mcp/scripts/build-preview-config.mjs
+            adapters/mcp/wrangler.jsonc
+            adapters/mcp/test/worker.test.mjs
+            adapters/mcp/test/preview-config.test.mjs
           )
 
           for path in "${forbidden_paths[@]}"; do
             if [[ -e "$path" ]]; then
-              echo "Atlas template residue must be removed: $path" >&2
+              echo "Retired or unrelated artifact must be removed: $path" >&2
               exit 1
             fi
           done
