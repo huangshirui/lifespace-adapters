@@ -1,0 +1,157 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  handleIdentityOAuthMcp, oauthResourceConfig, validateIntrospection,
+} from "../src/identity-oauth-worker.mjs";
+
+const RESOURCE = "https://resource.example.com/mcp";
+const ISSUER = "https://identity.example.com";
+const TOKEN = "lsp_oat_" + "A".repeat(43);
+const SECRET = "synthetic-resource-secret-" + "S".repeat(40);
+const base = {
+  MCP_RESOURCE_URI: RESOURCE, MCP_OAUTH_ISSUER: ISSUER,
+  OAUTH_RESOURCE_SERVER_SECRET: SECRET,
+};
+const active = {
+  active: true, client_id: "ocli_synthetic",
+  authorization_id: "oaz_synthetic", sub: "usr_synthetic",
+  application_id: "app_synthetic", space_id: "spc_synthetic",
+  agent_id: "agt_synthetic", scope: "resources:read",
+  resource: RESOURCE, exp: Math.floor(Date.now() / 1000) + 180,
+  allow_user_authorization: false,
+};
+function fixture(introspection = active) {
+  const calls = [];
+  const env = { ...base, IDENTITY: { fetch: async (url, init) => {
+    calls.push({ url, init });
+    return Response.json(introspection);
+  } } };
+  return { env, calls };
+}
+function rpc(method, opts = {}) {
+  return new Request(RESOURCE, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: "Bearer " + TOKEN,
+      ...opts.headers,
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: opts.params || {} }),
+  });
+}
+
+test("RFC 9728 metadata lists Identity as the AS, not Cloudflare Managed OAuth", async () => {
+  const f = fixture();
+  for (const path of ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"]) {
+    const result = await handleIdentityOAuthMcp(new Request("https://resource.example.com" + path), f.env);
+    assert.equal(result.status, 200);
+    assert.deepEqual(await result.json(), {
+      resource: RESOURCE, authorization_servers: [ISSUER],
+      scopes_supported: ["resources:read"], bearer_methods_supported: ["header"],
+    });
+  }
+  assert.equal(f.calls.length, 0);
+  assert.deepEqual(oauthResourceConfig(base), {
+    issuer: ISSUER, resource: RESOURCE, origin: "https://resource.example.com",
+    metadata: "https://resource.example.com/.well-known/oauth-protected-resource/mcp",
+  });
+});
+
+test("MCP 401 advertises protected-resource metadata before making any Identity/Core call", async () => {
+  const f = fixture();
+  for (const authorization of [undefined, "", "Bearer forged",
+    "Bearer lsp_ort_" + "x".repeat(50), "Bearer " + "x".repeat(5000)]) {
+    const req = rpc("initialize", { headers: { authorization: authorization || "" } });
+    const result = await handleIdentityOAuthMcp(req, f.env);
+    assert.equal(result.status, 401);
+    assert.match(result.headers.get("www-authenticate") || "", /resource_metadata="https:\/\/resource\.example\.com\/\.well-known\/oauth-protected-resource\/mcp"/u);
+    assert.match(result.headers.get("www-authenticate") || "", /scope="resources:read"/u);
+  }
+  assert.equal(f.calls.length, 0);
+});
+
+test("opaque token is introspected privately for its exact resource; never forwarded to Core", async () => {
+  const f = fixture();
+  const result = await handleIdentityOAuthMcp(rpc("initialize"), f.env);
+  assert.equal(result.status, 200);
+  const content = await result.json();
+  assert.equal(content.result.protocolVersion, "2025-11-25");
+  assert.equal(f.calls.length, 1);
+  assert.equal(new URL(f.calls[0].url).pathname, "/oauth/introspect");
+  assert.equal(f.calls[0].init.headers["x-lifespace-resource-secret"], SECRET);
+  assert.deepEqual(Object.fromEntries(new URLSearchParams(f.calls[0].init.body)), {
+    token: TOKEN, resource: RESOURCE,
+  });
+  assert.ok(!JSON.stringify(content).includes(TOKEN));
+  assert.ok(!JSON.stringify(content).includes("usr_synthetic"));
+  assert.ok(!JSON.stringify(content).includes("agt_synthetic"));
+});
+
+test("revoked, expired, wrong-resource, mismatched agent or client is rejected before protocol dispatch", async () => {
+  for (const payload of [
+    { ...active, active: false },
+    { ...active, resource: "https://other.example.com/mcp" },
+    { ...active, exp: Math.floor(Date.now() / 1000) - 2 },
+    { ...active, agent_id: "" },
+    { ...active, client_id: "" },
+    { ...active, space_id: "" },
+    { ...active, allow_user_authorization: "yes" },
+    { ...active, scope: "resources:read resources:read" },
+  ]) {
+    const f = fixture(payload);
+    const r = await handleIdentityOAuthMcp(rpc("initialize"), f.env);
+    assert.equal(r.status, 401);
+    assert.equal(f.calls.length, 1);
+  }
+});
+
+test("a valid write-only token cannot list read tools or silently gain read scope", async () => {
+  const f = fixture({ ...active, scope: "resources:write" });
+  const r = await handleIdentityOAuthMcp(rpc("tools/list"), f.env);
+  assert.equal(r.status, 403);
+  assert.match(r.headers.get("www-authenticate") || "", /insufficient_scope/u);
+});
+
+test("correct authorization does not yet grant Core execution or User Delegation", async () => {
+  const f = fixture({ ...active, allow_user_authorization: true });
+  for (const name of ["tools/list", "tools/call"]) {
+    const r = await handleIdentityOAuthMcp(rpc(name), f.env);
+    assert.equal(r.status, 503);
+    assert.deepEqual(await r.json(), { error: "Core-authorized Agent execution bridge not available" });
+  }
+  assert.equal(f.calls.length, 2);
+  assert.deepEqual(validateIntrospection({ ...active, allow_user_authorization: true }, oauthResourceConfig(base)).context, {
+    clientId: active.client_id, authorizationId: active.authorization_id,
+    userId: active.sub, applicationId: active.application_id,
+    spaceId: active.space_id, agentId: active.agent_id,
+    scopes: ["resources:read"], mayRequestDelegation: true,
+  });
+});
+
+test("malformed config or missing internal resource secret fails closed without token disclosure", async () => {
+  for (const env of [
+    { ...base, MCP_OAUTH_ISSUER: "http://identity.example.com" },
+    { ...base, MCP_RESOURCE_URI: "https://resource.example.com/mcp?scope=all" },
+    { ...base, MCP_RESOURCE_URI: "https://resource.example.com/other" },
+    { ...base, MCP_OAUTH_ISSUER: "https://identity.example.com/custom" },
+    { ...base, MCP_RESOURCE_URI: "https://*.example.com/mcp" },
+  ]) {
+    const r = await handleIdentityOAuthMcp(rpc("initialize"), env);
+    assert.equal(r.status, 503);
+  }
+  const r = await handleIdentityOAuthMcp(rpc("initialize"), {
+    ...base, IDENTITY: fixture().env.IDENTITY,
+    OAUTH_RESOURCE_SERVER_SECRET: "",
+  });
+  assert.equal(r.status, 503);
+});
+
+test("host-origin mismatch, CORS origin, query/path confusion and wrong transport are denied", async () => {
+  const f = fixture();
+  assert.equal((await handleIdentityOAuthMcp(new Request("https://evil.example.com/mcp", { method: "POST" }), f.env)).status, 403);
+  assert.equal((await handleIdentityOAuthMcp(rpc("ping", { headers: { origin: "https://evil.example.com" } }), f.env)).status, 403);
+  assert.equal((await handleIdentityOAuthMcp(new Request(RESOURCE + "?foo=bar", { method: "POST" }), f.env)).status, 404);
+  assert.equal((await handleIdentityOAuthMcp(new Request(RESOURCE), f.env)).status, 405);
+  assert.equal(f.calls.length, 0);
+});
