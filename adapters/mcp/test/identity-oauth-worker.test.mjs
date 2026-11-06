@@ -60,6 +60,60 @@ test("RFC 9728 metadata lists Identity as the AS, not Cloudflare Managed OAuth",
   });
 });
 
+test("one private Adapter serves multiple Core mcp_* Resources with exact OAuth isolation", async () => {
+  const secondId = "mcp_" + "b".repeat(32);
+  const second = "https://resource.example.com/mcp/" + secondId;
+  const dynamic = {
+    ...base, MCP_RESOURCE_URI: undefined,
+    MCP_RESOURCE_ORIGIN: "https://resource.example.com",
+  };
+  const f = fixture();
+  f.env = { ...f.env, ...dynamic };
+  // Both IDs are syntactically canonical. The public Core ingress and its
+  // current-state DB policy decide which ones are actually enabled.
+  for (const [id, resource] of [[SERVER_ID, RESOURCE], [secondId, second]]) {
+    const path = "/.well-known/oauth-protected-resource/mcp/" + id;
+    const metadata = await handleIdentityOAuthMcp(
+      new Request("https://resource.example.com" + path), f.env,
+    );
+    assert.equal(metadata.status, 200);
+    assert.equal((await metadata.json()).resource, resource);
+    const noBearer = await handleIdentityOAuthMcp(new Request(resource, {
+      method: "POST", headers: {
+        "content-type": "application/json", accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "initialize", id: 1 }),
+    }), f.env);
+    assert.equal(noBearer.status, 401);
+    assert.equal(noBearer.headers.get("www-authenticate")?.includes(path), true);
+  }
+  assert.equal(f.calls.length, 0);
+  // A bearer authorized for Server A fails for Server B, including if
+  // another private Service Binding caller skips the Core ingress.
+  const wrongBearer = await handleIdentityOAuthMcp(new Request(second, {
+    method: "POST", headers: {
+      "content-type": "application/json", accept: "application/json, text/event-stream",
+      authorization: "Bearer " + TOKEN,
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", method: "initialize", id: 1 }),
+  }), f.env);
+  assert.equal(wrongBearer.status, 401);
+  assert.equal(f.calls.length, 1);
+  assert.equal(new URLSearchParams(f.calls[0].init.body).get("resource"), second);
+
+  for (const bad of [
+    "https://resource.example.com/mcp",
+    "https://resource.example.com/mcp/" + secondId + "/",
+    "https://resource.example.com/mcp/not-an-id",
+    "https://evil.example.com/mcp/" + secondId,
+  ]) {
+    const response = await handleIdentityOAuthMcp(new Request(bad, { method: "GET" }), f.env);
+    assert.ok(response.status === 404 || response.status === 503);
+  }
+  assert.equal(oauthResourceConfig({ ...dynamic, MCP_RESOURCE_URI: RESOURCE }, second), null);
+  assert.equal(oauthResourceConfig({ ...dynamic, MCP_RESOURCE_ORIGIN: "https://*.example.com" }, second), null);
+});
+
 test("MCP 401 advertises protected-resource metadata before making any Identity/Core call", async () => {
   const f = fixture();
   for (const authorization of [undefined, "", "Bearer forged",
