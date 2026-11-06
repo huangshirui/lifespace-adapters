@@ -1,150 +1,91 @@
-# MCP Adapter（MCP 适配器）
+# MCP Adapter（MCP 协议适配器）
 
-## Goal（目标）
+## Source of truth / 事实来源
 
-The MCP Adapter projects the current LifeSpace capability surface into MCP without becoming a source of LifeSpace domain or authorization truth.
+LifeSpace owns global Identity, OAuth authorization, Space, Membership, Data Grant, Agent/Delegation, Application × Model Access, Model Policy, and current effective authority. This repository only adapts **verified LifeSpace contracts** into MCP transport and tool schemas.
 
-> **MCP `tools/list` reflects the current LifeSpace-effective projection, and MCP `tools/call` executes only through canonical LifeSpace operations.**
+> `tools/list` may expose only the live Core-provided authorized capability projection; `tools/call` must execute through authoritative Core operations with renewed authorization. A cached Tool or valid OAuth token is **not** runtime authority.
 
-## Current implementation status（当前实现状态）
+## Current implementation / 当前实现
 
-The verified projection slice is the **Canonical Query Projection Core**. A **read-only Cloudflare Worker MCP resource server** has been added as an MVP deployment candidate; live Cloudflare Managed OAuth E2E is not yet validated.
+Two complementary, independently tested components exist:
+
+1. **Identity OAuth Protected Resource Server candidate:** `adapters/mcp/src/identity-oauth-worker.mjs`, with RFC 9728 metadata, exact-resource OAuth bearer introspection and minimum MCP transport handshake. **No actual data tools are exposed or executed yet.** It has no deployment trigger.
+2. **Canonical Query Projection Core:** `src/progressive-discovery.mjs` and `src/projection.mjs`. Pure transforms tested against synthetic, LifeSpace-compatible Progressive Runtime Discovery and Canonical Query descriptors. They are not yet connected to an OAuth-authenticated Core execution bridge.
+
+The Cloudflare Managed OAuth Preview experiment and its Worker runtime/deployment configuration are **retired**. There is no Legacy Preview fallback and no independent Access JWT exchange in this Resource Server.
+
+## OAuth and Agent execution boundary / OAuth 与 Agent 执行边界
 
 ```text
-MCP-facing adapter layer
-        │
-        ├── GET /api/v1/me/_discovery/inventory
-        ├── GET /api/v1/spaces/{spaceId}/_discovery/models/{modelKey}
-        ├── one deterministic MCP query Tool per selected model
-        └── POST /api/v1/spaces/{spaceId}/models/{modelKey}/records/query
+External MCP Client
+  → LifeSpace Identity OAuth Authorization Server (PKCE S256)
+  → Account Consent (Application → Space → Agent → execution mode)
+  → MCP Resource Server: lsp_oat_* and exact Resource
+      → private Identity /oauth/introspect (current token status)
+      → [pending] authorized, Space-bound Agent execution token
+      → Core current Discovery / canonical query with real actor attribution
 ```
 
-The adapter consumes the current Canonical Query semantic descriptor, including the composition rule that Search and Filter jointly constrain the candidate set before Sort and cursor Pagination. The code remains independent from a concrete MCP SDK.
+The public OAuth bearer must never be forwarded as a LifeSpace Core JWT. The Client-selected User ID is the **authorization owner**, not the executor. An OAuth claim that the Client may request User Delegation is not a Delegation grant. Core/Identity must establish the actual Agent Principal, Actor, Application, Space and, if user-represented, an explicit authorized Delegation. The MCP adapter cannot fabricate these.
 
-## Progressive Discovery mapping（渐进式发现映射）
+**Fail-closed status:** `initialize` and `ping` work for successfully introspected tokens. `tools/list` and `tools/call` return 503 until the trusted execution bridge is implemented and its negative-path tests are complete. No user data is accessible from this candidate.
 
-The adapter loads the compact current-principal inventory, selects relevant model keys, and fetches semantic detail only for those models through the inventory-published path template.
+The new Resource Server requires (in separately protected deployment configuration, never this public repository):
+- exact `MCP_RESOURCE_URI` (HTTPS URL ending in `/mcp`);
+- exact `MCP_OAUTH_ISSUER`;
+- private `IDENTITY` Service Binding to same-environment LifeSpace Identity;
+- private `OAUTH_RESOURCE_SERVER_SECRET` shared only with same-environment Identity for introspection.
 
-It must:
+Neither core read/write access nor a server-level Client Scope is inferred from those settings.
 
-- preserve readable Space Context from inventory;
-- verify semantic detail `(key, version, schemaHash)` against the inventory snapshot and fail closed on drift;
-- keep readable Space IDs as distinct execution targets;
-- treat semantic detail as semantics, not durable authorization evidence;
-- avoid eager relation target lookup or reference resolution.
+## Progressive Runtime Discovery / 渐进式发现
 
-Full `/api/v1/me/_discovery` and Space-scoped discovery remain compatibility/fallback inputs. Tool ranking/top-K may narrow what is shown but cannot broaden LifeSpace authority.
+Core owns the current visibility and permission intersection. The adapter uses:
 
-## Canonical Query Tool projection（统一查询工具投影）
+```text
+GET /api/v1/me/_discovery/inventory
+  → visible (Space, model) entries
+  → select compatible current models
+GET /api/v1/spaces/{spaceId}/_discovery/models/{modelKey}
+  → verify model identity, version and schemaHash
+  → project query.canonical
+```
 
-For every selected readable model, the Projection Core emits exactly one `lifespace.query.{modelKey}` Tool. The default Tool schema is intentionally **Agent-friendly rather than a verbatim copy of Core's full recursive Filter AST**.
+A stale inventory or model detail may only narrow, never broaden, what is exposed. Visibility is checked again at query time through Core.
 
-Default arguments are:
+## Canonical Query mapping / 统一查询
+
+For each published, readable model, the pure projection emits one `lifespace.query.{modelKey}` tool (or one per independently scoped External binding). Default MCP input:
 
 ```text
 spaceId
-search?           keyword string
-filters[]?        high-frequency typed predicates, combined with AND
-sort[]?           ordered sort criteria
-limit?            bounded page size
-cursor?           opaque continuation cursor
-advancedFilter?   optional nested Canonical Filter AST for complex Boolean logic
+search?
+filters[]?       flat typed AND filters
+sort[]?
+limit?
+cursor?
+advancedFilter?  optional nested Boolean expression
 ```
 
-Rules:
+`search` and `filter` constrain the candidate set by intersection before Sort and cursor Pagination. `filters[]` and `advancedFilter` cannot be supplied together. Typed dates/ranges are forwarded for Core-owned time and DST semantics. Only descriptor-published fields/operators/sort/pagination and a readable Space are allowed.
 
-- `search` is emitted only when searchable fields are published;
-- every entry in `filters[]` is descriptor-backed and exposes only a published field/operator/value shape;
-- multiple `filters[]` entries compile to one Canonical `and` group;
-- `filters[]` and `advancedFilter` are mutually exclusive;
-- `advancedFilter` exists only for queries that genuinely need nested AND/OR logic;
-- local-date-window, date-range and instant-range operands are passed through unchanged;
-- `sort[]` preserves caller order and published field/direction restrictions;
-- `limit` and `cursor` compile into the Canonical `page` object;
-- `spaceId` is restricted to the readable Spaces captured by the projection binding.
-
-This keeps simple Agent calls small while preserving full Canonical Query expressiveness when needed. It does not create a second query language: both the simple surface and `advancedFilter` deterministically lower to the same Core Canonical Query.
-
-Legacy `query.filters`, `query.comparisons`, and `query.capabilityQueries` do not generate parallel MCP tools and are not compatibility requirements for this adapter.
-
-## Execution mapping（执行映射）
-
-A simple Agent call such as:
-
-```json
-{
-  "spaceId": "spc_example",
-  "search": "renew",
-  "filters": [
-    { "field": "status", "operator": "eq", "value": "open" }
-  ],
-  "sort": [
-    { "field": "createdAt", "direction": "desc" }
-  ],
-  "limit": 25
-}
-```
-
-is lowered to:
+The projected invocation uses:
 
 ```text
 POST /api/v1/spaces/{spaceId}/models/{modelKey}/records/query
-Content-Type: application/json
-
-{
-  search: { text: "renew" },
-  filter: { field: "status", op: "eq", value: "open" },
-  sort: [{ field: "createdAt", direction: "desc" }],
-  page: { limit: 25 }
-}
 ```
 
-When several simple filters are supplied, the adapter emits `{ and: [...] }`. When `advancedFilter` is supplied, it validates and forwards that Canonical Boolean expression as `filter` instead.
+Record Policies, current Grants, Delegation state, semantic validation and concurrency remain Core responsibilities. This layer never caches private records or recomputes authority.
 
-A cached Tool can still be denied by LifeSpace after authority changes. This is correct: execution-time authorization remains authoritative.
+## Prohibited surfaces / 禁止暴露
 
-## Authorization and credential boundary（授权与凭据边界）
+Ordinary MCP tools must not expose Core/Identity Platform Admin endpoints, direct D1 queries, provider secrets, unscoped service credentials or cross-Space data. A different Console administrative MCP profile would require a separate design, credential and policy approval.
 
-The adapter does not calculate effective permission. LifeSpace remains authoritative for credential scope, Application × Model Access, Space Membership/Data Grant, Agent Delegation, model/capability restrictions, record Policy and revocation.
+## Required verification / 必要验收
 
-The future MCP Server must use credentials for the real execution context. It must not use a permanent platform-admin credential, mint authority locally, accept client-supplied Principal/Grant/Scope as proof, or log/persist reusable bearer credentials without a separately approved secure architecture.
+Synthetic tests cover OAuth bearer/resource/scope rejection; current-state private introspection; expired/revoked tokens; wrong client/application/Space/Agent; no Core access when the bridge is absent; model-key/schema drift; typed query projection; invalid fields and Space isolation.
 
-Platform Admin / Console control-plane operations are excluded from ordinary MCP discovery and fallback routing.
+Still required before enabling data tools: current-state Agent execution exchange owned by LifeSpace, exact OAuth Resource allowlisting, protected Staging deployment, authorized MCP Client registration, positive Core discovery/query and negative revocation/cross-Space/delegation tests. **A passing CI or OAuth metadata document is not evidence of working MCP data access.**
 
-## Protocol surface（协议表面）
-
-Projection output is deterministic and MCP-safe:
-
-- deterministic Tool names and ordering;
-- object-root JSON Schema 2020-12 `inputSchema`;
-- letters, digits, `_`, `-`, and `.` only in Tool names;
-- no dependence on a transport session;
-- no Standard Query / Capability Query mode exposed to the Agent.
-
-The new Worker handles stateless `initialize`, `ping`, `tools/list`, `tools/call` as MCP Streamable HTTP JSON responses. It accepts only Cloudflare Access JWT assertions, exchanges them at Identity using the existing trusted Application contract for a short-lived `resources:read` User token, and calls Core only with that token. Cloudflare Managed OAuth is the OAuth Authorization Server. Core authority is checked for fresh discovery and again during execution. No per-client OAuth Scope management or write tools are claimed. Deployment and live E2E remain pending.
-
-## Verification（验证）
-
-Synthetic tests prove:
-
-1. Progressive Discovery loads only selected semantic detail and detects identity drift;
-2. every model emits one Canonical Query Tool even when legacy capability metadata remains;
-3. the default Agent surface uses simple Search / flat typed filters / Sort / limit / cursor;
-4. flat filters deterministically lower to Canonical predicates and AND composition;
-5. `advancedFilter` preserves nested Boolean capability without becoming the default schema;
-6. Calendar/time-range targets require no model-specific source branch;
-7. execution produces the canonical POST path and structured body;
-8. local-date windows pass through unchanged for Core-owned DST conversion;
-9. unknown Space, field, operator, argument, invocation, composition or range shape fails closed;
-10. filter depth/node, sort and pagination bounds are rechecked at execution mapping.
-
-The next milestone is a real MCP Server / transport binding around this projection core.
-## Worker Previews deployment target（部署目标）
-
-The read-only Data MCP runtime is developed under `adapters/mcp`, independently of the Notion provider and future protocol adapters. Standard repository CI runs tests but has no deployment trigger; a code-only MCP edit cannot deploy another adapter.
-
-The target Staging path uses Cloudflare Worker Previews on `workers.dev`, with `wrangler >=4.135.0` and generated, untracked Preview-only `IDENTITY` / `CORE` Service Bindings. These must resolve to the Staging target Workers' **regular deployments**, because Cloudflare Preview service bindings do not automatically point to other Previews. A Preview also requires its own `LIFESPACE_APPLICATION_CREDENTIAL` secret, Managed OAuth Access protection, and Access AUD registration to the existing LifeSpace Staging Application.
-
-Future Console/Platform Admin MCP functionality may share low-level MCP protocol code, but must not share this read-only MCP security context: it requires a separate protected Worker and a separately approved human admin Actor Proof plus controlled Executor, not `resources:read` or a model-key setting.
-
-The legacy custom-domain Staging Worker and its Access application have been retired. The protected `workers.dev` Preview is now the Staging endpoint; its newly issued `lsa_*` and Access Audience require real OAuth → Identity User → Core Query acceptance (including negative authorization tests). A Preview config/CI pass alone does not constitute verification. See `../adapters/mcp/README.md` for deployment and acceptance guidance.
+For current operator and implementation boundaries, see [MCP README](../adapters/mcp/README.md).

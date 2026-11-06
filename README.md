@@ -82,14 +82,14 @@ The repository is moving from **contract alignment** into the first verified ada
 - Public-repository safety baseline: defined.
 - Canonical LifeSpace contract-consumption rules: defined.
 - MCP Canonical Query Projection Core: **implemented and tested** against synthetic current Canonical Query semantic fixtures.
-- MCP read-only Streamable HTTP Worker MVP: **implemented as candidate; OAuth live E2E pending**.
-- MCP deployment runtime: **Cloudflare Workers with isolated Worker Previews candidate** (generated environment-specific bindings, no committed live topology); real Preview OAuth E2E remains pending.
+- MCP OAuth Protected Resource Server: **Identity OAuth-based candidate, synthetically tested, not deployed**, with current-state exact-resource token introspection and limited protocol handshake. It deliberately blocks data tools pending a verified Core Agent execution bridge.
+- MCP production/staging runtime: **not yet provisioned**; CI dry-runs a synthetic separate Identity OAuth Resource Server only. The old Cloudflare Access Managed OAuth Worker Preview implementation and deployment generator have been removed.
 
 The implemented projection covers Progressive Discovery loading, exactly one Canonical Query Tool per selected model, an Agent-friendly default schema (`search`, flat typed `filters[]`, ordered `sort[]`, `limit`, `cursor`), optional `advancedFilter` for nested Boolean expressions, typed temporal/range operands, Space-scoped execution bindings and canonical modelKey-addressed POST request construction.
 
 Search and Filter are projected as parallel candidate-selection facets and compile to the same Canonical Query. Legacy Generic/Capability query metadata does not create a second MCP surface and is not preserved as an adapter compatibility mode.
 
-The next milestone is staging end-to-end validation of the read-only Worker with Cloudflare Access Managed OAuth, existing Identity Access assertion exchange, and current Core effective authority.
+The next milestone is LifeSpace-owned, Space-bound Agent execution authorization followed by a separately protected **Identity OAuth MCP Resource Server** Staging deployment and OAuth/Agent/Core end-to-end validation. No legacy Access JWT assertion or Managed OAuth Preview compatibility is planned.
 
 ## Documentation（文档）
 

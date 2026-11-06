@@ -54,11 +54,16 @@ jobs:
             packages/domain/README.md
             packages/mcp/README.md
             schemas/v0.1/README.md
+            adapters/mcp/src/worker.mjs
+            adapters/mcp/scripts/build-preview-config.mjs
+            adapters/mcp/wrangler.jsonc
+            adapters/mcp/test/worker.test.mjs
+            adapters/mcp/test/preview-config.test.mjs
           )
 
           for path in "${forbidden_paths[@]}"; do
             if [[ -e "$path" ]]; then
-              echo "Atlas template residue must be removed: $path" >&2
+              echo "Retired or unrelated artifact must be removed: $path" >&2
               exit 1
             fi
           done
@@ -80,23 +85,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Syntax check MCP projection and Managed OAuth Worker
+      - name: Syntax check canonical MCP projection and Identity OAuth Resource Worker
         run: |
           node --check adapters/mcp/src/progressive-discovery.mjs
           node --check adapters/mcp/src/projection.mjs
-          node --check adapters/mcp/src/worker.mjs
-          node --check adapters/mcp/scripts/build-preview-config.mjs
-      - name: Test MCP projection and Managed OAuth Worker
+          node --check adapters/mcp/src/identity-oauth-worker.mjs
+      - name: Test MCP query projection and Identity OAuth Protected Resource
         run: node --test adapters/mcp/test/*.test.mjs
-      - name: Dry-run MCP Worker Preview package (synthetic bindings only)
-        env:
-          MCP_WORKER_NAME: example-lifespace-mcp
-          MCP_PREVIEW_IDENTITY_SERVICE: example-identity-staging
-          MCP_PREVIEW_CORE_SERVICE: example-core-staging
-          MCP_PREVIEW_MODEL_KEYS: task,event
-        run: |
-          node adapters/mcp/scripts/build-preview-config.mjs
-          npx --yes --package wrangler@4.135.0 wrangler deploy --dry-run --config adapters/mcp/.wrangler.preview.generated.json --outdir .wrangler/ci-preview-dry-run
+      - name: Dry-run independent Identity OAuth MCP Resource Server package
+        run: >-
+          npx --yes --package wrangler@4.135.0 wrangler deploy
+          --dry-run --config adapters/mcp/wrangler.identity-oauth.jsonc
+          --outdir .wrangler/ci-identity-oauth-dry-run
 
 
   secret-scan:
