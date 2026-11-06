@@ -1,0 +1,196 @@
+// New Identity-owned OAuth MCP Resource Server. Not the retired Access
+// Managed OAuth Preview. This layer never exchanges CF Access assertions,
+// forwards public OAuth access tokens to Core, or grants User delegation.
+const MCP_PATH = "/mcp";
+const META_PATH = "/.well-known/oauth-protected-resource";
+const META_MCP_PATH = META_PATH + MCP_PATH;
+const MAX_BODY_BYTES = 65536;
+const MAX_TOKEN_LENGTH = 1024;
+const VERSION = "2025-11-25";
+
+function json(data, status = 200, headers = {}) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store", ...headers },
+  });
+}
+
+function validHttpsOrigin(value) {
+  if (typeof value !== "string" || value.length > 512) return null;
+  try {
+    const u = new URL(value);
+    if (u.protocol !== "https:" || u.username || u.password || u.hash
+      || u.search || u.pathname !== "/" || u.hostname.includes("*")) return null;
+    return u.origin;
+  } catch { return null; }
+}
+
+export function oauthResourceConfig(env) {
+  const issuer = validHttpsOrigin(env?.MCP_OAUTH_ISSUER);
+  const resource = typeof env?.MCP_RESOURCE_URI === "string" ? env.MCP_RESOURCE_URI : "";
+  let resourceUrl;
+  try { resourceUrl = new URL(resource); } catch { return null; }
+  if (!issuer || resource.length > 1024 || resourceUrl.protocol !== "https:"
+    || resourceUrl.username || resourceUrl.password || resourceUrl.hash || resourceUrl.search
+    || resourceUrl.pathname !== MCP_PATH || resourceUrl.href !== resource
+    || resourceUrl.hostname.includes("*")) return null;
+  return { issuer, resource, origin: resourceUrl.origin,
+    metadata: resourceUrl.origin + META_MCP_PATH };
+}
+
+function challenge(config, extra = "") {
+  return "Bearer resource_metadata=\"" + config.metadata
+    + "\", scope=\"resources:read\"" + extra;
+}
+
+function authFailure(config, error = "invalid_token") {
+  return json({ error: "OAuth authorization required" }, 401, {
+    "www-authenticate": challenge(config, ", error=\"" + error + "\""),
+  });
+}
+
+function insufficientScope(config) {
+  return json({ error: "insufficient_scope" }, 403, {
+    "www-authenticate": challenge(config, ", error=\"insufficient_scope\""),
+  });
+}
+
+export function validateIntrospection(data, config) {
+  if (!data || data.active !== true) return { error: "invalid_token" };
+  if (data.resource !== config.resource || !Number.isSafeInteger(data.exp)
+    || data.exp <= Math.floor(Date.now() / 1000)) return { error: "invalid_token" };
+  if (!/^ocli_[a-zA-Z0-9_-]+$/u.test(data.client_id || "")
+    || !/^oaz_[a-zA-Z0-9_-]+$/u.test(data.authorization_id || "")
+    || !/^usr_[a-zA-Z0-9_-]+$/u.test(data.sub || "")
+    || !/^app_[a-zA-Z0-9_-]+$/u.test(data.application_id || "")
+    || !/^spc_[a-zA-Z0-9_-]+$/u.test(data.space_id || "")
+    || !/^agt_[a-zA-Z0-9_-]+$/u.test(data.agent_id || "")) return { error: "invalid_token" };
+  if (typeof data.scope !== "string" || data.scope.length > 500) return { error: "invalid_token" };
+  const scopes = data.scope.split(/\s+/u).filter(Boolean);
+  if (new Set(scopes).size !== scopes.length || scopes.some(s => ![
+    "resources:read", "resources:write", "resources:manage",
+  ].includes(s))) return { error: "invalid_token" };
+  if (!scopes.includes("resources:read")) return { error: "insufficient_scope" };
+  if (typeof data.allow_user_authorization !== "boolean") return { error: "invalid_token" };
+  return {
+    // This is context, not Core authority. It must never be turned into a
+    // trusted Principal, Actor or Delegation without an Identity/Core bridge.
+    context: Object.freeze({
+      clientId: data.client_id, authorizationId: data.authorization_id,
+      userId: data.sub, applicationId: data.application_id,
+      spaceId: data.space_id, agentId: data.agent_id, scopes: Object.freeze(scopes),
+      mayRequestDelegation: data.allow_user_authorization,
+    }),
+  };
+}
+
+async function verifyOAuthToken(request, config, env) {
+  const header = request.headers.get("authorization") || "";
+  if (!/^Bearer lsp_oat_[A-Za-z0-9_-]+$/u.test(header)
+    || header.length > MAX_TOKEN_LENGTH + 7) return { error: "invalid_token" };
+  const secret = env?.OAUTH_RESOURCE_SERVER_SECRET;
+  if (typeof secret !== "string" || secret.length < 32
+    || !env?.IDENTITY || typeof env.IDENTITY.fetch !== "function") {
+    return { error: "resource_unavailable" };
+  }
+  let response;
+  try {
+    response = await env.IDENTITY.fetch("https://identity.internal/oauth/introspect", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-lifespace-resource-secret": secret,
+      },
+      body: new URLSearchParams({
+        token: header.slice(7), resource: config.resource,
+      }),
+    });
+  } catch {
+    return { error: "resource_unavailable" };
+  }
+  if (response.status !== 200) return { error: "resource_unavailable" };
+  const payload = await response.json().catch(() => null);
+  return validateIntrospection(payload, config);
+}
+
+function validOrigin(request, config) {
+  const header = request.headers.get("origin");
+  return header === null || header === config.origin;
+}
+
+function rpcResult(id, result) {
+  return json({ jsonrpc: "2.0", id, result });
+}
+
+function rpcError(id, code, message, status = 200) {
+  return json({ jsonrpc: "2.0", id, error: { code, message } }, status);
+}
+
+export async function handleIdentityOAuthMcp(request, env) {
+  const config = oauthResourceConfig(env);
+  if (!config) return json({ error: "Resource server unavailable" }, 503);
+  const url = new URL(request.url);
+  if (url.origin !== config.origin) return json({ error: "Invalid resource host" }, 403);
+
+  if ((url.pathname === META_PATH || url.pathname === META_MCP_PATH) && request.method === "GET") {
+    return json({
+      resource: config.resource,
+      authorization_servers: [config.issuer],
+      scopes_supported: ["resources:read"],
+      bearer_methods_supported: ["header"],
+    }, 200, { "cache-control": "public, max-age=300" });
+  }
+  if (url.pathname !== MCP_PATH || url.search) return json({ error: "Not found" }, 404);
+  if (!validOrigin(request, config)) return json({ error: "Invalid origin" }, 403);
+  if (request.method !== "POST") return json({ error: "MCP requires POST" }, 405, { allow: "POST" });
+
+  const authorized = await verifyOAuthToken(request, config, env);
+  if (authorized.error === "resource_unavailable") return json({ error: "Resource authentication unavailable" }, 503);
+  if (authorized.error === "insufficient_scope") return insufficientScope(config);
+  if (authorized.error) return authFailure(config);
+
+  if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
+    return json({ error: "Expected application/json" }, 415);
+  }
+  const accept = request.headers.get("accept") || "";
+  if (!accept.includes("application/json") || !accept.includes("text/event-stream")) {
+    return json({ error: "MCP Accept header is required" }, 406);
+  }
+  const declared = Number(request.headers.get("content-length") || 0);
+  if (!Number.isFinite(declared) || declared > MAX_BODY_BYTES) return json({ error: "Request too large" }, 413);
+  const body = await request.text();
+  if (new TextEncoder().encode(body).length > MAX_BODY_BYTES) return json({ error: "Request too large" }, 413);
+  let message;
+  try { message = JSON.parse(body); } catch { return rpcError(null, -32700, "Parse error", 400); }
+  if (!message || typeof message !== "object" || Array.isArray(message)
+    || message.jsonrpc !== "2.0" || typeof message.method !== "string"
+    || (message.id !== undefined && !(
+      (typeof message.id === "string" && message.id.length <= 128)
+      || (typeof message.id === "number" && Number.isFinite(message.id))
+    ))) return rpcError(null, -32600, "Invalid request", 400);
+
+  if (message.method === "notifications/initialized" && message.id === undefined) {
+    return new Response(null, { status: 202 });
+  }
+  if (message.id === undefined) return rpcError(null, -32600, "Unexpected notification", 400);
+  if (message.method === "initialize") {
+    return rpcResult(message.id, {
+      protocolVersion: VERSION,
+      capabilities: { tools: { listChanged: false } },
+      serverInfo: { name: "lifespace-identity-oauth-mcp", version: "0.1.0-candidate" },
+    });
+  }
+  if (message.method === "ping") return rpcResult(message.id, {});
+
+  // A correct OAuth access token is NOT a LifeSpace execution credential.
+  // tools/list or tools/call must not use the selected user ID to access Core.
+  // Enable data operations only after the Core-owned, Space-bound,
+  // revocation-aware Agent execution bridge is separately implemented.
+  if (message.method === "tools/list" || message.method === "tools/call") {
+    return json({ error: "Core-authorized Agent execution bridge not available" }, 503);
+  }
+  return rpcError(message.id, -32601, "Method not found");
+}
+
+export default { fetch: handleIdentityOAuthMcp };
