@@ -39,7 +39,7 @@ An `lsp_oat_*` OAuth token identifies a currently authorized Client/Application/
 ## Deployment boundary / 部署边界
 
 No live environment is configured in source code. A later reviewed staging deployment must set:
-- **Canonical multi-Server mode:** `MCP_RESOURCE_ORIGIN=https://core-staging.aisr.online` (Staging) or `https://core.aisr.online` (Production). It must be a **single exact origin**, without a path, query, wildcard or credentials. The Resource is constructed from each incoming `/mcp/{mcp_*}` path; one private Adapter serves many Core-managed Servers. Do not set `MCP_RESOURCE_URI` in this mode.
+- **Canonical multi-Server mode:** `MCP_RESOURCE_ORIGIN` set to the exact Core origin supplied by the LifeSpace deployment (use `https://core.example.test` in synthetic fixtures). It must be a **single exact origin**, without a path, query, wildcard or credentials. The Resource is constructed from each incoming `/mcp/{mcp_*}` path; one private Adapter serves many Core-managed Servers. Do not set `MCP_RESOURCE_URI` in this mode.
 - **Isolated test-only single-resource mode:** `MCP_RESOURCE_URI` accepts a fixed canonical `/mcp/{mcp_*}` URL when `MCP_RESOURCE_ORIGIN` is absent; this does **not** implement dynamic Server provisioning.
 - `MCP_OAUTH_ISSUER`: exact LifeSpace Identity OAuth Issuer origin.
 - `IDENTITY`: private Service Binding to the **same environment's Identity Worker**.
