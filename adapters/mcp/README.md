@@ -63,3 +63,16 @@ See [the adapter design](../../docs/mcp-adapter.md) and [canonical LifeSpace con
 ### MCP multi-model discovery call budget
 
 The Identity OAuth execution bridge projects current read-only Query tools from one Space. For up to **32 selected models**, the Adapter uses one scoped Core inventory request plus **one batch semantic-detail request** `POST /api/v1/spaces/{spaceId}/_discovery/models/batch`; Core enforces each model's current Grant/Application/Server Tool Policy, and the Adapter still validates the matching model version/schemaHash before projecting tools. If the authorized Server exposes more than the configured runtime limit or the semantics response exceeds its safety cap, projection fails closed rather than omitting models silently. No external or Person Directory tools are included in this first Query-only slice.
+
+ 
+### MCP protocol-era compatibility (2026-07-28 and legacy)
+
+The same OAuth Resource endpoint now accepts modern stateless `2026-07-28` requests and legacy `2025-11-25` handshake-era requests:
+
+- Modern: each request includes `MCP-Protocol-Version`, `Mcp-Method` (plus `Mcp-Name` for `tools/call`), and matching `params._meta` protocol version/client capabilities. The Adapter exposes `server/discover`, per-response `resultType: complete` and private `tools/list` results. Header/body mismatch returns `-32020`; unsupported versions return `-32022`. Modern `initialize` and `ping` are unsupported.
+- Legacy: `initialize`, `ping` and `notifications/initialized` remain supported for existing 2025-era clients.
+- Both eras use the **same** exact-resource OAuth token validation, selected-Space Agent Direct read-only Core bridge, live per-model query authority and 32-model batched semantics.
+
+Client registration remains a separate OAuth Authorization Server concern. The 2026-07-28 MCP specification prefers HTTPS Client ID Metadata Documents (CIMD); unrestricted DCR is not required and must not be enabled merely to claim protocol compatibility. Before declaring broad third-party-client readiness, validate safe CIMD/pre-registration and actual clients in Staging.
+
+Reference: https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
