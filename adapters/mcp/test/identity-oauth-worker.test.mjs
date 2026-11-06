@@ -290,7 +290,13 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       assert.ok(!JSON.stringify(init.headers).includes(TOKEN));
       if (denied && path.endsWith("/records/query")) return Response.json({ error: "forbidden" }, { status: 403 });
       if (path === "/api/v1/me/_discovery/inventory") return Response.json(inventory);
-      if (path.endsWith("/_discovery/models/task")) return Response.json(detail);
+      if (path.endsWith("/_discovery/models/batch")) {
+        assert.equal(init.method, "POST");
+        assert.deepEqual(JSON.parse(init.body), { modelKeys: ["task"] });
+        return Response.json({ data: {
+          models: [{ modelKey: "task", detail: detail.data }],
+        } });
+      }
       if (path.endsWith("/records/query")) return Response.json({ data: { items: [{ title: "Synthetic only" }] } });
       throw new Error("Unexpected Core endpoint " + path);
     } },
@@ -310,7 +316,7 @@ test("OAuth Agent Direct tools/list uses only Identity-minted Core JWT and scope
     "IDENTITY /oauth/introspect",
     "IDENTITY /oauth/execution-tokens",
     "CORE /api/v1/me/_discovery/inventory",
-    "CORE /api/v1/spaces/spc_synthetic/_discovery/models/task",
+    "CORE /api/v1/spaces/spc_synthetic/_discovery/models/batch",
   ]);
 });
 
