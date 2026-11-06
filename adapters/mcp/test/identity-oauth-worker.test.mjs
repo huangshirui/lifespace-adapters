@@ -186,6 +186,29 @@ test("revoked, expired, wrong-resource, mismatched agent or client is rejected b
   }
 });
 
+test("Identity-verified CIMD client IDs retain exact OAuth resource and authorization context", async () => {
+  const clientId = "https://agent.example.com/oauth/client.json";
+  const result = validateIntrospection({ ...active, client_id: clientId }, oauthResourceConfig(base));
+  assert.equal(result.context.clientId, clientId);
+  assert.equal(result.context.authorizationId, active.authorization_id);
+  for (const badId of [
+    "http://agent.example.com/oauth/client.json",
+    "https://agent.example.com/",
+    "https://localhost/oauth/client.json",
+    "https://127.0.0.1/oauth/client.json",
+    "https://agent.example.com/oauth/client.json?redirect=https://evil.example",
+    "https://bad:pass@agent.example.com/oauth/client.json",
+    "https://agent.example.com:443/oauth/client.json",
+  ]) {
+    // URL normalization is exact; no user-supplied URL is ever fetched here.
+    assert.deepEqual(
+      validateIntrospection({ ...active, client_id: badId }, oauthResourceConfig(base)),
+      { error: "invalid_token" },
+      badId,
+    );
+  }
+});
+
 test("a valid write-only token cannot list read tools or silently gain read scope", async () => {
   const f = fixture({ ...active, scope: "resources:write" });
   const r = await handleIdentityOAuthMcp(rpc("tools/list"), f.env);
