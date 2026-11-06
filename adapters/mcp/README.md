@@ -1,140 +1,53 @@
-# MCP Adapter
+# LifeSpace MCP Adapter / MCP 协议适配器
 
-This directory owns the concrete MCP（Model Context Protocol，模型上下文协议） adapter for LifeSpace.
+## Current status / 当前状态
 
-Current status: **Canonical Query Projection Core and read-only MCP Worker tested; Cloudflare Workers Preview staging deployed with isolated Identity/Core bindings, dedicated Preview credential and Managed OAuth. Real client OAuth → Identity → Core query E2E is not yet verified**.
+**LifeSpace Identity OAuth Resource Server candidate — implemented and covered by synthetic tests, not deployed.**
 
-The current M0 code proves the protocol-independent path:
+The obsolete Cloudflare Access Managed OAuth Preview architecture has been retired. There is **no legacy authentication compatibility mode, Preview deployment generator, or published Managed OAuth Worker** in this adapter.
 
-```text
-GET /api/v1/me/_discovery/inventory
-        ↓
-select visible model keys
-        ↓
-GET /api/v1/spaces/{spaceId}/_discovery/models/{modelKey}
-        ↓
-one Agent-friendly MCP Query Tool per model + execution binding
-        ↓
-compile simple Agent arguments to LifeSpace Canonical Query
-        ↓
-POST /api/v1/spaces/{spaceId}/models/{modelKey}/records/query
-```
-
-Files:
-
-- `src/progressive-discovery.mjs` loads compact inventory plus only selected semantic details and fails closed when `key/version/schemaHash` drift;
-- `src/projection.mjs` projects `query.canonical` into one smaller MCP Tool per selected model and builds Canonical Query POST requests;
-- `test/projection.test.mjs` proves Progressive Discovery bounds, Agent-friendly Search/filters/Sort/Pagination, optional `advancedFilter`, range forwarding and Space isolation;
-- `test/projection-fail-closed.test.mjs` proves unsupported or stale semantics are rejected.
-
-The default Query Tool surface is:
+The new integration boundary is:
 
 ```text
-spaceId
-search?
-filters[]?        simple typed predicates; AND by default
-sort[]?
-limit?
-cursor?
-advancedFilter?  nested Canonical Boolean AST only when needed
+MCP Client
+  ├─ Identity OAuth Authorization Server: registration, PKCE, tokens, revocation
+  ├─ LifeSpace Account: Application / Space / Agent consent
+  └─ MCP Protected Resource Server (this adapter)
+       ├─ private, exact-resource Identity token introspection
+       └─ [pending] trusted Space-scoped Agent execution bridge → Core
 ```
 
-`filters[]` and `advancedFilter` are mutually exclusive. Both compile into the same LifeSpace-owned Canonical Filter semantics; there is no MCP Standard Query / Capability Query mode.
+**Do not confuse OAuth token acceptance with Core data authorization.**
+An `lsp_oat_*` OAuth token identifies a currently authorized Client/Application/Space/Agent combination. It does not itself become a Core JWT, a User Principal, or a Delegation. The selected execution mode may permit asking for future User Delegation, but cannot create one.
 
-The adapter must:
+## Files / 文件说明
 
-- derive visible MCP capabilities from current LifeSpace Runtime Discovery（运行时发现）;
-- preserve Space Context（空间上下文）;
-- execute only through canonical LifeSpace operations;
-- preserve Principal / Actor / Application Context（权限主体 / 执行者 / 应用上下文） semantics;
-- fail closed when LifeSpace contract semantics cannot be represented safely;
-- never expose Platform Admin（平台管理） control-plane operations through ordinary Agent discovery.
+- `src/identity-oauth-worker.mjs`: independently packaged MCP OAuth Protected Resource Server, with RFC 9728 discovery, Bearer challenge, Identity introspection, scope/resource checks and limited MCP handshake.
+- `test/identity-oauth-worker.test.mjs`: synthetic positive and deny-path tests for the new Resource Server.
+- `wrangler.identity-oauth.jsonc`: **synthetic local/CI dry-run**; no live hostname, Worker name, secret or binding.
+- `src/progressive-discovery.mjs`: Core-owned dynamic inventory and selected-model semantic loading, with drift protection.
+- `src/projection.mjs`: pure canonical query-to-MCP Tool schema projection and bounded LifeSpace query request builder.
+- `test/projection.test.mjs`, `test/projection-fail-closed.test.mjs`, `test/external-discovery.test.mjs`: independent projection/contract validation.
 
-The projection consumes the current LifeSpace Canonical Query semantic descriptor, including Search + Filter intersection semantics, typed filter targets/operators, ordered Sort and cursor Pagination. Legacy query metadata does not generate a second MCP query surface and is not maintained as a compatibility mode.
+## Currently implemented MCP surface
 
-The new MVP Worker chooses Cloudflare Workers stateless Streamable HTTP transport and delegates OAuth to Cloudflare Access Managed OAuth; this does not change LifeSpace semantics or implement client-specific grant management.
+- `GET /.well-known/oauth-protected-resource` and the Resource-path-specific well-known endpoint return the fixed Identity OAuth Issuer and exact Resource identifier.
+- `POST /mcp` accepts only opaque `lsp_oat_*` bearer credentials and calls private Identity `POST /oauth/introspect` for **the exact requested Resource**. No browser Access JWT or server-only `lsa_*` is accepted as an MCP user credential.
+- `initialize`, `ping` and limited notifications are implemented.
+- `tools/list` and `tools/call` deliberately respond **503** until LifeSpace supplies a trusted, Space-bound, revocation-aware Agent execution bridge. The pure MCP query projection is tested but **is not connected to OAuth execution**.
 
-See [`../../docs/mcp-adapter.md`](../../docs/mcp-adapter.md) before extending implementation.
+## Deployment boundary / 部署边界
 
-Do not add a local domain model, permission database, copied Model Registry or direct D1 access here.
+No live environment is configured in source code. A later reviewed staging deployment must set:
+- `MCP_RESOURCE_URI`: canonical HTTPS MCP Resource URL with exact `/mcp` path.
+- `MCP_OAUTH_ISSUER`: exact LifeSpace Identity OAuth Issuer origin.
+- `IDENTITY`: private Service Binding to the **same environment's Identity Worker**.
+- `OAUTH_RESOURCE_SERVER_SECRET`: dedicated private Resource Server secret matching the Identity secret, supplied through protected deployment configuration only.
 
-## Managed OAuth / Remote MCP MVP（开发中）
+The future Core execution bridge must perform current authorization checks and prevent access outside the specifically authorized Space. Neither this adapter nor an OAuth client can declare User/Agent/Delegation authority by itself.
 
-The first deployment candidate is a read-only, stateless Streamable HTTP MCP Resource Server at `POST /mcp`. The OAuth Authorization Server is **Cloudflare Access Managed OAuth**, not this Worker and not a second implementation in LifeSpace Identity.
+Only after that bridge, protected Resource Server deployment, exact Identity resource allowlist, approved OAuth client registration and browser/real MCP negative-path tests succeed may Data Tools be enabled.
 
-### Trust and API flow（可信链路）
+**Never deploy the retired Managed OAuth Preview or reuse its Worker/Access resources.** This repository has no ordinary CI environment deployment; CI performs synthetic tests and a Wrangler dry-run only.
 
-1. Cloudflare Access guards the **dedicated `workers.dev` Preview URL** with Managed OAuth and injects `Cf-Access-Jwt-Assertion`. The previously used custom-domain Worker and Access app have been retired.
-2. MCP Worker passes the **original assertion**, with its own server-only `lsa_*`, to Identity `POST /internal/v1/access/tokens`, requesting **only** `resources:read`.
-3. Identity independently checks issuer, RSA signature, audience registered to that LifeSpace Application, `usr_*` mapping and credential scope ceiling. A first-time unlinked principal **fails closed**; never automatically create or merge an account.
-4. The short-lived **LifeSpace user JWT** is sent server-to-server to Core inventory, semantic detail and canonical query APIs. The Cloudflare OAuth access token is never passed through to Core.
-5. Core provides fresh effective Discovery and **rechecks** current Space / Data Grant / Application Model Access and credential scope at execution time. Only read-only `lifespace.query.*` tools are exposed.
-6. MCP OAuth Client ID and per-client custom Scope are **not assumed** to be available from Cloudflare Managed OAuth. The MVP therefore uses a single read-only credential ceiling and Access Policy for the entire protected endpoint. No mutation tools, per-client grants or Agent representation are claimed.
-
-### Runtime deployment prerequisites（Staging Preview）
-
-- Deploy through the isolated Worker Preview described below. Never expose an unprotected `*.workers.dev` Preview.
-- Cloudflare Access must protect the actual Preview Worker destination with Managed OAuth; register that Preview Access Audience with the intended LifeSpace Application.
-- Create an independent, revocable `lsa_*` for that Application, whose allowed scopes contain `resources:read`. Grant only the desired models **read** access via the existing Core Application Model Access control plane.
-- Inject these Worker variables/secrets through the Cloudflare dashboard or deployment secrets, never commit their values:
-  - `LIFESPACE_APPLICATION_CREDENTIAL` **Secret**, Staging `lsa_*`.
-  - `MCP_MODEL_KEYS` comma-separated allowlist of exact model keys, e.g. `task,event` (max 16).
-  - `IDENTITY_BASE_URL` and `CORE_BASE_URL` trusted HTTPS origins, **or** private Service Bindings named `IDENTITY` and `CORE` (preferred).
-  - Optional `MCP_ALLOWED_ORIGINS` comma-separated exact origins for browser-based MCP callers. Origin is rejected unless same-origin or explicitly allowlisted.
-- All MCP HTTP requests require valid Access proof; the Handler never accepts caller-provided `userId`, `scope`, `actorId` or a raw LifeSpace bearer credential.
-- Cloudflare Managed OAuth supplies OAuth Protected Resource Metadata and 401 challenges **before** requests reach this Worker. Do **not** add a second `/.well-known/oauth-*` or OAuth token exchange handler here.
-
-### Local verification and Staging acceptance（验收）
-
-```bash
-node --check adapters/mcp/src/worker.mjs
-node --test adapters/mcp/test/*.test.mjs
-```
-
-MVP smoke acceptance requires **real evidence**: OAuth discovery → browser login → Access login-policy success → Identity mapping to the existing `usr_*` → `initialize` → `tools/list` exposing a permitted query model → `tools/call` returning only that user/Space's records. Then test rejected Access principal, wrong audience, unlinked principal, Core grant/model revoke, forbidden writes and token expiry. A passing synthetic CI test does **not** count as live OAuth E2E acceptance.
-
-### MVP limitations（限制）
-
-- No custom per-client OAuth Consent/Scope UI, no reliable Managed OAuth Client identity for LifeSpace policy: fail closed by giving **every** OAuth caller the same minimal read-only upper bound, independent of Core's narrower user authorization.
-- No Agent execution delegation, create/update/delete, multi-domain top-K selection, or direct anonymous access. Future extension needs distinct architectural and security review.
-- A Cloudflare Access app that authenticates successfully but is not registered to the corresponding LifeSpace Application audience still fails `/internal/v1/access/tokens`.
-- The server is stateless, supports JSON MCP replies over Streamable HTTP and does not implement server-to-client SSE streams or resumable MCP sessions. MCP clients requiring long-lived GET/SSE need a later compatibility slice.
-
-
-## Worker Previews and independent deployment（正式改造目标）
-
-**One MCP adapter codebase / shared protocol runtime; independent Worker instances per security profile.** Normal Data Query capabilities stay on this read-only MCP Resource Server. A future LifeSpace Console / Platform Admin MCP projection may share protocol utilities, but requires a separate **admin Worker, Access application, privileged actor-proof/executor flow, testing and explicit architecture approval**; it must never be enabled by adding models to `MCP_MODEL_KEYS`.
-
-### No extra LifeSpace provisioning action
-
-The dedicated, Console-governed MCP Application must enforce `resources:read`; a newly issued scoped `lsa_*` can be installed into the specific trusted `staging` Preview. The former one-time GitHub credential installer is retired. New Preview secrets live in the **specific trusted `staging` Preview only**, not in public CI or Previews Base. Never put personal-data credentials in the Preview Base: other branch previews could inherit them.
-
-### Deployment shape（部署形态）
-
-- Keep `adapters/notion/` and all other adapters independently built and released. The repository CI may test both, but **nothing in the MCP Preview flow deploys or publishes Notion**.
-- Use **Workers Previews** (`wrangler >=4.135.0`) as branch Staging, with a stable Preview alias named `staging`, and **`workers.dev`** as the host. No custom `aisr.online` hostname is required.
-- The parent Worker is **not public** (`workers_dev: false`, no production route). Only explicit Preview URLs are enabled (`preview_urls: true`), and must be protected by a **Cloudflare Access Managed OAuth** self-hosted policy for the Preview Worker/hostname **before** exposing a real authenticated Preview.
-- A Preview has distinct variables, secrets, and Service Bindings. A Preview Service Binding calls the **target Worker's regular deployed version**, NOT a corresponding Preview: the Identity/Core target Workers **must explicitly be Staging deployments**. No Production binding is permitted.
-- Do not commit real Worker names, Account IDs, Access AUDs, routes, `lsa_*`, data or hostname mappings. Cloudflare dashboard/secret store is the owner of those deployment-only values.
-
-### One-time Cloudflare configuration（一次性）
-
-1. Create a parent MCP Worker with no public production route and enable only Access-protected Worker Preview URLs at a dedicated `workers.dev` hostname.
-2. Configure a **Preview Worker** Cloudflare Access application (or one dedicated to the exact Preview hostname) with **Managed OAuth enabled** and only approved test users. Register its AUD privately to the dedicated MCP Application through **LifeSpace Staging Console**. Do not reuse retired custom-domain Access audiences.
-3. In the **specific `staging` Preview**, install the dedicated, revocable `LIFESPACE_APPLICATION_CREDENTIAL` (`lsa_*`) approved for read-only MCP. Use Cloudflare Dashboard or `wrangler preview secret put LIFESPACE_APPLICATION_CREDENTIAL --name staging --worker-name <worker>` from a trusted operator computer; it creates a new Preview deployment. Do **not** set this secret in `Previews Base` (other branch previews could inherit it), the public repository, CI logs, or a PR.
-4. Set deploy-only environment values `MCP_WORKER_NAME`, `MCP_PREVIEW_IDENTITY_SERVICE`, `MCP_PREVIEW_CORE_SERVICE`, and optional `MCP_PREVIEW_MODEL_KEYS`. Identity/Core must point to separate known **Staging-only** deployed Workers. The generator rejects target names not ending in `-staging` but this naming check is not a substitute for verifying actual Cloudflare resources.
-5. Build the effective, **untracked** Wrangler configuration and deploy only this MCP Preview (not any other Adapter):
-   ```sh
-   node adapters/mcp/scripts/build-preview-config.mjs
-   npx --yes --package=wrangler@4.135.0 wrangler preview \
-     --config adapters/mcp/.wrangler.preview.generated.json \
-     --name staging
-   ```
-   If Wrangler requires an existing parent Worker, bootstrap **that parent only** once with its production route disabled; never run a production Worker deploy as a side effect of Preview code changes. Cloudflare's Git integration/Builds can run these same commands for trusted branches **without copying the staging credential into CI** after Access is configured. Restrict credential-bearing previews to the trusted staging name; never allow arbitrary fork PR code to inherit the staging secret. No separate temporary GitHub credential-installation Action is needed.
-6. Accept the Preview only after live OAuth discovery/browser sign-in, Access JWT audience exchange to a linked `usr_*`, `initialize`, allowed `tools/list`, actual `tools/call`, and denied/revoked-principal testing. An Access prompt or successful CI alone is not enough.
-
-### Migration / Cutover（迁移与回退）
-
-The previously configured custom-domain Staging MCP Worker, Access application and one-off LifeSpace credential-installer workflow have been retired by the project owner. The fixed `staging` Preview is now the only staging endpoint. Ensure its **new** credential maps to the intended Console Application/Audience and verify real OAuth → LifeSpace User → authorized Model Query before claiming E2E readiness. No ordinary MCP code edit should deploy another adapter.
-
-**Limitation:** per-OAuth-client custom consent scopes and actual client ID are still not established; the Preview enforces only the limited read-only Application credential ceiling, plus fresh Core authorization.
+See [the adapter design](../../docs/mcp-adapter.md) and [canonical LifeSpace contracts](../../docs/lifespace-contract-consumption.md).
