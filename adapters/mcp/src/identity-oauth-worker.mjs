@@ -85,11 +85,28 @@ function insufficientScope(config) {
   });
 }
 
+function validatedOAuthClientId(value) {
+  if (typeof value !== "string" || value.length > 256) return false;
+  if (/^ocli_[A-Za-z0-9_-]+$/u.test(value)) return true;
+  // This is the exact identifier from Identity's authenticated token
+  // introspection, NOT a user-provided URL to fetch from the Adapter.
+  let uri;
+  try { uri = new URL(value); } catch { return false; }
+  if (uri.protocol !== "https:" || uri.href !== value
+    || uri.username || uri.password || uri.search || uri.hash || uri.port
+    || uri.pathname === "/" || uri.hostname.includes("*")) return false;
+  const labels = uri.hostname.toLowerCase().split(".");
+  if (labels.length < 2 || labels.some(label => !label || label.length > 63
+    || label.startsWith("-") || label.endsWith("-"))
+    || !/^[a-z]{2,63}$/u.test(labels[labels.length - 1])) return false;
+  return true;
+}
+
 export function validateIntrospection(data, config) {
   if (!data || data.active !== true) return { error: "invalid_token" };
   if (data.resource !== config.resource || !Number.isSafeInteger(data.exp)
     || data.exp <= Math.floor(Date.now() / 1000)) return { error: "invalid_token" };
-  if (!/^ocli_[a-zA-Z0-9_-]+$/u.test(data.client_id || "")
+  if (!validatedOAuthClientId(data.client_id)
     || !/^oaz_[a-zA-Z0-9_-]+$/u.test(data.authorization_id || "")
     || !/^usr_[a-zA-Z0-9_-]+$/u.test(data.sub || "")
     || !/^app_[a-zA-Z0-9_-]+$/u.test(data.application_id || "")
