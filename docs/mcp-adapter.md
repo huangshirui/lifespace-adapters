@@ -33,7 +33,7 @@ The public OAuth bearer must never be forwarded as a LifeSpace Core JWT. The Cli
 **Candidate fail-closed status:** `initialize` and `ping` require current OAuth introspection. `tools/list` and `tools/call` are implemented using a private same-environment Identity/Core bridge, signed read-only Agent Direct token, single selected Space and fresh Core permission checks. They return 503 when bindings/bridge/projection are missing or inconsistent; unauthorized OAuth/Space/model operations are denied. This is **synthetically tested but not deployed**.
 
 The new Resource Server requires (in separately protected deployment configuration, never this public repository):
-- exact `MCP_RESOURCE_URI` (HTTPS URL with the Core-issued `/mcp/{mcp_*}` path);
+- canonical multi-Server `MCP_RESOURCE_ORIGIN` (an exact trusted Core HTTPS origin, no trailing path); the private Adapter derives the current `/mcp/{mcp_*}` Resource from the forwarded request; or fixed `MCP_RESOURCE_URI` only for an isolated single-resource synthetic test;
 - exact `MCP_OAUTH_ISSUER`;
 - private `IDENTITY` Service Binding to same-environment LifeSpace Identity;
 - private `OAUTH_RESOURCE_SERVER_SECRET` shared only with same-environment Identity for introspection and read-only execution exchange;
