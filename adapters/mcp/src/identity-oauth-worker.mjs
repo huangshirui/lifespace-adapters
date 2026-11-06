@@ -290,15 +290,17 @@ function rpcError(id, code, message, status = 200, data) {
 
 function decodeMcpName(raw) {
   if (typeof raw !== "string") return null;
-  const encoded = /^=\\?base64\\?([A-Za-z0-9+/]+={0,2})\\?=$/u.exec(raw);
-  if (encoded) {
+  const prefix = "=?base64?", suffix = "?=";
+  if (raw.startsWith(prefix) && raw.endsWith(suffix)) {
+    const encoded = raw.slice(prefix.length, -suffix.length);
+    if (!/^[A-Za-z0-9+/]+={0,2}$/u.test(encoded)) return null;
     try {
       return new TextDecoder("utf-8", { fatal: true })
-        .decode(Uint8Array.from(atob(encoded[1]), x => x.charCodeAt(0)));
+        .decode(Uint8Array.from(atob(encoded), x => x.charCodeAt(0)));
     } catch { return null; }
   }
-  if (!/^[\\x20-\\x7e]+$/u.test(raw) || raw.trim() !== raw
-    || (raw.startsWith("=?base64?") && raw.endsWith("?="))) return null;
+  if (raw.trim() !== raw || raw.startsWith(prefix)
+    || [...raw].some(c => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) > 0x7e)) return null;
   return raw;
 }
 
