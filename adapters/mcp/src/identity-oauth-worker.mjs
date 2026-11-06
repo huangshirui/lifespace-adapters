@@ -1,3 +1,6 @@
+import { loadSelectedModelSemantics } from "./progressive-discovery.mjs";
+import { buildLifeSpaceQueryRequest, projectSelectedModelsToMcp } from "./projection.mjs";
+
 // New Identity-owned OAuth MCP Resource Server. Not the retired Access
 // Managed OAuth Preview. This layer never exchanges CF Access assertions,
 // forwards public OAuth access tokens to Core, or grants User delegation.
@@ -5,6 +8,8 @@ const MCP_PATH = "/mcp";
 const META_PATH = "/.well-known/oauth-protected-resource";
 const META_MCP_PATH = META_PATH + MCP_PATH;
 const MAX_BODY_BYTES = 65536;
+const MAX_RESULT_BYTES = 131072;
+const MAX_DISCOVERED_MODELS = 16;
 const MAX_TOKEN_LENGTH = 1024;
 const VERSION = "2025-11-25";
 
@@ -114,6 +119,104 @@ async function verifyOAuthToken(request, config, env) {
   return validateIntrospection(payload, config);
 }
 
+async function coreExecution(authorized, request, config, env) {
+  if (!env?.CORE || typeof env.CORE.fetch !== "function"
+    || !env?.IDENTITY || typeof env.IDENTITY.fetch !== "function") {
+    return { error: "CORE_EXECUTION_NOT_CONFIGURED" };
+  }
+  // Only Identity owns OAuth → Core Agent execution translation. The public
+  // OAuth token is sent solely to Identity, never to Core or browser JS.
+  const secret = env.OAUTH_RESOURCE_SERVER_SECRET;
+  const token = request.headers.get("authorization").slice(7);
+  let response;
+  try {
+    response = await env.IDENTITY.fetch("https://identity.internal/oauth/execution-tokens", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-lifespace-resource-secret": secret,
+      },
+      body: JSON.stringify({ token, resource: config.resource }),
+    });
+  } catch { return { error: "IDENTITY_EXECUTION_UNAVAILABLE" }; }
+  if (response.status !== 200) return { error: "IDENTITY_EXECUTION_DENIED" };
+  const result = await response.json().catch(() => null);
+  const data = result?.data;
+  if (data?.tokenType !== "Bearer"
+    || typeof data.accessToken !== "string"
+    || data.accessToken.length > 5000
+    || !/^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(data.accessToken)
+    || data.scope !== "resources:read"
+    || !Number.isSafeInteger(data.expiresIn) || data.expiresIn < 1 || data.expiresIn > 60
+    || data.applicationId !== authorized.context.applicationId
+    || data.agentId !== authorized.context.agentId
+    || data.spaceId !== authorized.context.spaceId) {
+    return { error: "IDENTITY_EXECUTION_INVALID_RESPONSE" };
+  }
+  return { token: data.accessToken };
+}
+
+async function coreJson(env, coreToken, path, method = "GET", body) {
+  if (!/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/[a-z][a-z0-9_-]*|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
+    return { error: "CORE_PATH_REJECTED" };
+  }
+  let response;
+  try {
+    response = await env.CORE.fetch("https://core.internal" + path, {
+      method, headers: {
+        authorization: "Bearer " + coreToken,
+        accept: "application/json",
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  } catch { return { error: "CORE_UNAVAILABLE" }; }
+  if (!response.ok) {
+    return { error: response.status === 401 || response.status === 403
+      ? "CORE_PERMISSION_DENIED" : "CORE_UNAVAILABLE" };
+  }
+  let raw;
+  try { raw = await response.text(); } catch { return { error: "CORE_UNAVAILABLE" }; }
+  if (new TextEncoder().encode(raw).length > MAX_RESULT_BYTES) {
+    return { error: "CORE_RESULT_TOO_LARGE" };
+  }
+  let payload;
+  try { payload = JSON.parse(raw); } catch { return { error: "CORE_INVALID_RESPONSE" }; }
+  return { payload };
+}
+
+async function currentToolProjection(env, coreToken, selectedSpace) {
+  const first = await coreJson(env, coreToken, "/api/v1/me/_discovery/inventory");
+  if (first.error) return first;
+  const inventory = first.payload?.data;
+  if (!Array.isArray(inventory?.models) || !Array.isArray(inventory?.spaces)
+    || inventory.spaces.some(space => space?.spaceId !== selectedSpace)) {
+    return { error: "CORE_UNSCOPED_DISCOVERY" };
+  }
+  const keys = [...new Set(inventory.spaces.flatMap(space => (space.models ?? [])
+    .filter(entry => entry?.access?.includes("read"))
+    .map(entry => entry.modelKey)
+    .filter(key => typeof key === "string" && /^[a-z][a-z0-9_-]{0,63}$/u.test(key))))]
+    .sort().slice(0, MAX_DISCOVERED_MODELS);
+  if (!keys.length) return { projected: { tools: [], bindings: {} } };
+  const fetchJson = async path => {
+    const response = await coreJson(env, coreToken, path);
+    if (response.error) throw new Error("Core current discovery or model authority unavailable");
+    return response.payload;
+  };
+  try {
+    const selection = await loadSelectedModelSemantics({
+      selectedModelKeys: keys, inventoryResponse: first.payload, fetchJson,
+    });
+    // A signed OAuth execution JWT is restricted to the one consented Space.
+    if (selection.models.some(item =>
+      !item.spaces.every(space => space.spaceId === selectedSpace))) {
+      return { error: "CORE_UNSCOPED_SEMANTICS" };
+    }
+    return { projected: projectSelectedModelsToMcp(selection) };
+  } catch { return { error: "CORE_DISCOVERY_UNAVAILABLE" }; }
+}
+
 function validOrigin(request, config) {
   const header = request.headers.get("origin");
   return header === null || header === config.origin;
@@ -178,19 +281,50 @@ export async function handleIdentityOAuthMcp(request, env) {
     return rpcResult(message.id, {
       protocolVersion: VERSION,
       capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: "lifespace-identity-oauth-mcp", version: "0.1.0-candidate" },
+      serverInfo: { name: "lifespace-identity-oauth-mcp", version: "0.2.0-candidate" },
     });
   }
   if (message.method === "ping") return rpcResult(message.id, {});
 
-  // A correct OAuth access token is NOT a LifeSpace execution credential.
-  // tools/list or tools/call must not use the selected user ID to access Core.
-  // Enable data operations only after the Core-owned, Space-bound,
-  // revocation-aware Agent execution bridge is separately implemented.
-  if (message.method === "tools/list" || message.method === "tools/call") {
-    return json({ error: "Core-authorized Agent execution bridge not available" }, 503);
+  if (message.method !== "tools/list" && message.method !== "tools/call") {
+    return rpcError(message.id, -32601, "Method not found");
   }
-  return rpcError(message.id, -32601, "Method not found");
+  const execution = await coreExecution(authorized, request, config, env);
+  if (execution.error) return json({ error: execution.error }, 503);
+
+  const current = await currentToolProjection(env, execution.token, authorized.context.spaceId);
+  if (current.error) return json({ error: current.error }, 503);
+  if (message.method === "tools/list") {
+    if (message.params && (typeof message.params !== "object" || Array.isArray(message.params)
+      || Object.keys(message.params).some(key => key !== "cursor") || message.params.cursor)) {
+      return rpcError(message.id, -32602, "Unsupported pagination parameters");
+    }
+    return rpcResult(message.id, { tools: current.projected.tools });
+  }
+
+  if (!message.params || typeof message.params !== "object" || Array.isArray(message.params)
+    || typeof message.params.name !== "string"
+    || !message.params.arguments || typeof message.params.arguments !== "object"
+    || Array.isArray(message.params.arguments)) {
+    return rpcError(message.id, -32602, "Invalid tool invocation");
+  }
+  const binding = current.projected.bindings[message.params.name];
+  if (!binding) return rpcError(message.id, -32602, "Tool is not in the currently authorized projection");
+  let operation;
+  try {
+    operation = buildLifeSpaceQueryRequest(binding, message.params.arguments);
+  } catch { return rpcError(message.id, -32602, "Invalid arguments for current model semantics"); }
+  if (!operation.path.startsWith("/api/v1/spaces/"
+    + encodeURIComponent(authorized.context.spaceId) + "/")) {
+    return rpcError(message.id, -32602, "Selected Space mismatch");
+  }
+  const result = await coreJson(env, execution.token, operation.path, operation.method, operation.body);
+  if (result.error) return rpcResult(message.id, {
+    isError: true, content: [{ type: "text", text: result.error }],
+  });
+  return rpcResult(message.id, {
+    content: [{ type: "text", text: JSON.stringify(result.payload?.data ?? result.payload) }],
+  });
 }
 
 export default { fetch: handleIdentityOAuthMcp };
