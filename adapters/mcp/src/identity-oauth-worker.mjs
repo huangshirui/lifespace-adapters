@@ -30,12 +30,34 @@ function validHttpsOrigin(value) {
   } catch { return null; }
 }
 
-export function oauthResourceConfig(env) {
+export function oauthResourceConfig(env, requestUrl) {
   const issuer = validHttpsOrigin(env?.MCP_OAUTH_ISSUER);
+  if (!issuer) return null;
+  // One private Adapter Worker can serve every Core-issued mcp_* Server through
+  // Core's verified same-origin ingress. The Resource is the exact request path,
+  // never a Client-supplied header/body parameter or untrusted hostname.
+  const dynamicOrigin = env?.MCP_RESOURCE_ORIGIN === undefined
+    ? null : validHttpsOrigin(env.MCP_RESOURCE_ORIGIN);
+  if (env?.MCP_RESOURCE_ORIGIN !== undefined) {
+    if (!dynamicOrigin || env.MCP_RESOURCE_URI !== undefined || !requestUrl) return null;
+    let incoming;
+    try { incoming = new URL(requestUrl); } catch { return null; }
+    if (incoming.origin !== dynamicOrigin || incoming.username || incoming.password
+      || incoming.hash || incoming.search) return null;
+    const path = incoming.pathname.startsWith(META_PATH + "/mcp/")
+      ? incoming.pathname.slice(META_PATH.length) : incoming.pathname;
+    if (!MCP_PATH_PATTERN.test(path)) return null;
+    return {
+      issuer, resource: dynamicOrigin + path, origin: dynamicOrigin, path,
+      metadata: dynamicOrigin + META_PATH + path,
+    };
+  }
+  // Legacy single-resource candidate remains available only for isolated
+  // synthetic tests; production-style multi-Server routing uses the above.
   const resource = typeof env?.MCP_RESOURCE_URI === "string" ? env.MCP_RESOURCE_URI : "";
   let resourceUrl;
   try { resourceUrl = new URL(resource); } catch { return null; }
-  if (!issuer || resource.length > 1024 || resourceUrl.protocol !== "https:"
+  if (resource.length > 1024 || resourceUrl.protocol !== "https:"
     || resourceUrl.username || resourceUrl.password || resourceUrl.hash || resourceUrl.search
     || !MCP_PATH_PATTERN.test(resourceUrl.pathname) || resourceUrl.href !== resource
     || resourceUrl.hostname.includes("*")) return null;
@@ -230,7 +252,14 @@ function rpcError(id, code, message, status = 200) {
 }
 
 export async function handleIdentityOAuthMcp(request, env) {
-  const config = oauthResourceConfig(env);
+  const url = new URL(request.url);
+  if (env?.MCP_RESOURCE_ORIGIN !== undefined) {
+    // An unrelated URL is not a resource, even in the private Worker.
+    const path = url.pathname.startsWith(META_PATH + "/mcp/")
+      ? url.pathname.slice(META_PATH.length) : url.pathname;
+    if (!MCP_PATH_PATTERN.test(path)) return json({ error: "Not found" }, 404);
+  }
+  const config = oauthResourceConfig(env, request.url);
   if (!config) return json({ error: "Resource server unavailable" }, 503);
   const url = new URL(request.url);
   if (url.origin !== config.origin) return json({ error: "Invalid resource host" }, 403);
