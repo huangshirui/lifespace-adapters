@@ -34,7 +34,7 @@ An `lsp_oat_*` OAuth token identifies a currently authorized Client/Application/
 - `GET /.well-known/oauth-protected-resource` and the Resource-path-specific well-known endpoint return the fixed Identity OAuth Issuer and exact Resource identifier.
 - `POST /mcp` accepts only opaque `lsp_oat_*` bearer credentials and calls private Identity `POST /oauth/introspect` for **the exact requested Resource**. No browser Access JWT or server-only `lsa_*` is accepted as an MCP user credential.
 - `initialize`, `ping` and limited notifications are implemented.
-- `tools/list` and `tools/call` deliberately respond **503** until LifeSpace supplies a trusted, Space-bound, revocation-aware Agent execution bridge. The pure MCP query projection is tested but **is not connected to OAuth execution**.
+- `tools/list` and `tools/call` consume only the **Identity-issued read-only Agent Direct Core token** and project current Core-discovered models in the single Space selected by Consent. Execution is still revalidated by Core. They return **503** if the matching LifeSpace Identity/Core bridge, signatures, bindings or current-scoped discovery are unavailable. Synthetic tests pass, but this code is **not deployed**.
 
 ## Deployment boundary / 部署边界
 
@@ -43,10 +43,13 @@ No live environment is configured in source code. A later reviewed staging deplo
 - `MCP_OAUTH_ISSUER`: exact LifeSpace Identity OAuth Issuer origin.
 - `IDENTITY`: private Service Binding to the **same environment's Identity Worker**.
 - `OAUTH_RESOURCE_SERVER_SECRET`: dedicated private Resource Server secret matching the Identity secret, supplied through protected deployment configuration only.
+- `CORE`: private Service Binding to the **same environment's Core Worker**; no direct public Core origin or OAuth bearer forwarding.
+
+The adapter sends the original public OAuth bearer only to **Identity** for introspection and token exchange. The new Core bearer is Agent Direct with `principal=agent`, `actor=agent`, `resources:read`, selected `spaceId`, `applicationId`, authorization and resource identifiers; User Delegation is not implied. Core independently checks every call with Identity and reevaluates current model/Data Grant authority.
 
 The future Core execution bridge must perform current authorization checks and prevent access outside the specifically authorized Space. Neither this adapter nor an OAuth client can declare User/Agent/Delegation authority by itself.
 
-Only after that bridge, protected Resource Server deployment, exact Identity resource allowlist, approved OAuth client registration and browser/real MCP negative-path tests succeed may Data Tools be enabled.
+Only after LifeSpace PR #480 and this Adapters PR pass their own tests and are separately staged with protected Resource/secret bindings, exact Identity allowlist, approved OAuth clients, real Core Query and revocation/cross-Space negative tests may Data Tools be called **live-ready**.
 
 **Never deploy the retired Managed OAuth Preview or reuse its Worker/Access resources.** This repository has no ordinary CI environment deployment; CI performs synthetic tests and a Wrangler dry-run only.
 
