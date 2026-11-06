@@ -39,7 +39,8 @@ An `lsp_oat_*` OAuth token identifies a currently authorized Client/Application/
 ## Deployment boundary / 部署边界
 
 No live environment is configured in source code. A later reviewed staging deployment must set:
-- `MCP_RESOURCE_URI`: canonical HTTPS MCP Resource URL with exact `/mcp/{mcp_*}` path; no unscoped legacy `/mcp` fallback.
+- **Canonical multi-Server mode:** `MCP_RESOURCE_ORIGIN=https://core-staging.aisr.online` (Staging) or `https://core.aisr.online` (Production). It must be a **single exact origin**, without a path, query, wildcard or credentials. The Resource is constructed from each incoming `/mcp/{mcp_*}` path; one private Adapter serves many Core-managed Servers. Do not set `MCP_RESOURCE_URI` in this mode.
+- **Isolated test-only single-resource mode:** `MCP_RESOURCE_URI` accepts a fixed canonical `/mcp/{mcp_*}` URL when `MCP_RESOURCE_ORIGIN` is absent; this does **not** implement dynamic Server provisioning.
 - `MCP_OAUTH_ISSUER`: exact LifeSpace Identity OAuth Issuer origin.
 - `IDENTITY`: private Service Binding to the **same environment's Identity Worker**.
 - `OAUTH_RESOURCE_SERVER_SECRET`: dedicated private Resource Server secret matching the Identity secret, supplied through protected deployment configuration only.
@@ -54,3 +55,6 @@ Only after LifeSpace PR #480 and this Adapters PR pass their own tests and are s
 **Never deploy the retired Managed OAuth Preview or reuse its Worker/Access resources.** This repository has no ordinary CI environment deployment; CI performs synthetic tests and a Wrangler dry-run only.
 
 See [the adapter design](../../docs/mcp-adapter.md) and [canonical LifeSpace contracts](../../docs/lifespace-contract-consumption.md).
+
+
+**Public ingress ownership:** the `core[-staging].aisr.online` Core Worker is the public endpoint. It checks the current `mcp_*` enabled state and forwards both `POST /mcp/{serverId}` and its RFC 9728 metadata path over a **private** `MCP_ADAPTER` Service Binding. This Adapter Worker must not have workers.dev/preview/public routes. Identity additionally checks the exact resource against live Core Server state before OAuth authorize/approval, and Core rechecks selected operations per query. A syntactically correct resource path alone is never authority.
