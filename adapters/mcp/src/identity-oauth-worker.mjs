@@ -8,7 +8,7 @@ const MCP_PATH_PATTERN = /^\/mcp\/mcp_[a-f0-9]{32}$/u;
 const META_PATH = "/.well-known/oauth-protected-resource";
 const MAX_BODY_BYTES = 65536;
 const MAX_RESULT_BYTES = 131072;
-const MAX_DISCOVERED_MODELS = 16;
+const MAX_DISCOVERED_MODELS = 32;
 const MAX_TOKEN_LENGTH = 1024;
 const VERSION = "2025-11-25";
 
@@ -178,7 +178,7 @@ async function coreExecution(authorized, request, config, env) {
 }
 
 async function coreJson(env, coreToken, path, method = "GET", body) {
-  if (!/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/[a-z][a-z0-9_-]*|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
+  if (!/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
     return { error: "CORE_PATH_REJECTED" };
   }
   let response;
@@ -217,13 +217,40 @@ async function currentToolProjection(env, coreToken, selectedSpace) {
   const keys = [...new Set(inventory.spaces.flatMap(space => (space.models ?? [])
     .filter(entry => entry?.access?.includes("read"))
     .map(entry => entry.modelKey)
-    .filter(key => typeof key === "string" && /^[a-z][a-z0-9_-]{0,63}$/u.test(key))))]
-    .sort().slice(0, MAX_DISCOVERED_MODELS);
+    .filter(key => typeof key === "string" && /^[a-z][a-z0-9_]{1,62}$/u.test(key))))]
+    .sort();
+  // Do not silently drop configured Models: either project the entire
+  // authorized exposure or fail closed with an explicit capacity error.
+  if (keys.length > MAX_DISCOVERED_MODELS) return { error: "CORE_DISCOVERY_MODEL_LIMIT" };
   if (!keys.length) return { projected: { tools: [], bindings: {} } };
+  // One Core invocation returns all selected semantics; Core still checks
+  // every Model Grant, current Server Tool Policy and selected Space.
+  // This avoids exceeding Cloudflare's 32 Worker invocations per MCP request.
+  const batchPath = "/api/v1/spaces/" + encodeURIComponent(selectedSpace)
+    + "/_discovery/models/batch";
+  const batch = await coreJson(env, coreToken, batchPath, "POST", { modelKeys: keys });
+  if (batch.error) return batch;
+  const rawDetails = batch.payload?.data?.models;
+  if (!Array.isArray(rawDetails) || rawDetails.length !== keys.length) {
+    return { error: "CORE_DISCOVERY_INVALID_BATCH" };
+  }
+  const details = new Map();
+  for (const item of rawDetails) {
+    if (!item || !keys.includes(item.modelKey) || details.has(item.modelKey)
+      || !item.detail || typeof item.detail !== "object" || Array.isArray(item.detail)) {
+      return { error: "CORE_DISCOVERY_INVALID_BATCH" };
+    }
+    details.set(item.modelKey, { data: item.detail });
+  }
+  const detailPrefix = "/api/v1/spaces/" + encodeURIComponent(selectedSpace)
+    + "/_discovery/models/";
   const fetchJson = async path => {
-    const response = await coreJson(env, coreToken, path);
-    if (response.error) throw new Error("Core current discovery or model authority unavailable");
-    return response.payload;
+    if (!path.startsWith(detailPrefix)) {
+      throw new Error("Core semantic batch path escaped authorized Space");
+    }
+    const modelKey = path.slice(detailPrefix.length);
+    if (!details.has(modelKey)) throw new Error("No current Core semantic detail");
+    return details.get(modelKey);
   };
   try {
     const selection = await loadSelectedModelSemantics({
