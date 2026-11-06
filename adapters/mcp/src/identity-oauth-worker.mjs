@@ -4,9 +4,8 @@ import { buildLifeSpaceQueryRequest, projectSelectedModelsToMcp } from "./projec
 // New Identity-owned OAuth MCP Resource Server. Not the retired Access
 // Managed OAuth Preview. This layer never exchanges CF Access assertions,
 // forwards public OAuth access tokens to Core, or grants User delegation.
-const MCP_PATH = "/mcp";
+const MCP_PATH_PATTERN = /^\/mcp\/mcp_[a-f0-9]{32}$/u;
 const META_PATH = "/.well-known/oauth-protected-resource";
-const META_MCP_PATH = META_PATH + MCP_PATH;
 const MAX_BODY_BYTES = 65536;
 const MAX_RESULT_BYTES = 131072;
 const MAX_DISCOVERED_MODELS = 16;
@@ -38,10 +37,10 @@ export function oauthResourceConfig(env) {
   try { resourceUrl = new URL(resource); } catch { return null; }
   if (!issuer || resource.length > 1024 || resourceUrl.protocol !== "https:"
     || resourceUrl.username || resourceUrl.password || resourceUrl.hash || resourceUrl.search
-    || resourceUrl.pathname !== MCP_PATH || resourceUrl.href !== resource
+    || !MCP_PATH_PATTERN.test(resourceUrl.pathname) || resourceUrl.href !== resource
     || resourceUrl.hostname.includes("*")) return null;
-  return { issuer, resource, origin: resourceUrl.origin,
-    metadata: resourceUrl.origin + META_MCP_PATH };
+  return { issuer, resource, origin: resourceUrl.origin, path: resourceUrl.pathname,
+    metadata: resourceUrl.origin + META_PATH + resourceUrl.pathname };
 }
 
 function challenge(config, extra = "") {
@@ -236,7 +235,7 @@ export async function handleIdentityOAuthMcp(request, env) {
   const url = new URL(request.url);
   if (url.origin !== config.origin) return json({ error: "Invalid resource host" }, 403);
 
-  if ((url.pathname === META_PATH || url.pathname === META_MCP_PATH) && request.method === "GET") {
+  if ((url.pathname === META_PATH || url.pathname === META_PATH + config.path) && request.method === "GET") {
     return json({
       resource: config.resource,
       authorization_servers: [config.issuer],
@@ -244,7 +243,7 @@ export async function handleIdentityOAuthMcp(request, env) {
       bearer_methods_supported: ["header"],
     }, 200, { "cache-control": "public, max-age=300" });
   }
-  if (url.pathname !== MCP_PATH || url.search) return json({ error: "Not found" }, 404);
+  if (url.pathname !== config.path || url.search) return json({ error: "Not found" }, 404);
   if (!validOrigin(request, config)) return json({ error: "Invalid origin" }, 403);
   if (request.method !== "POST") return json({ error: "MCP requires POST" }, 405, { allow: "POST" });
 
