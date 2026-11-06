@@ -58,3 +58,8 @@ See [the adapter design](../../docs/mcp-adapter.md) and [canonical LifeSpace con
 
 
 **Public ingress ownership:** the `core[-staging].aisr.online` Core Worker is the public endpoint. It checks the current `mcp_*` enabled state and forwards both `POST /mcp/{serverId}` and its RFC 9728 metadata path over a **private** `MCP_ADAPTER` Service Binding. This Adapter Worker must not have workers.dev/preview/public routes. Identity additionally checks the exact resource against live Core Server state before OAuth authorize/approval, and Core rechecks selected operations per query. A syntactically correct resource path alone is never authority.
+
+
+### MCP multi-model discovery call budget
+
+The Identity OAuth execution bridge projects current read-only Query tools from one Space. For up to **32 selected models**, the Adapter uses one scoped Core inventory request plus **one batch semantic-detail request** `POST /api/v1/spaces/{spaceId}/_discovery/models/batch`; Core enforces each model's current Grant/Application/Server Tool Policy, and the Adapter still validates the matching model version/schemaHash before projecting tools. If the authorized Server exposes more than the configured runtime limit or the semantics response exceeds its safety cap, projection fails closed rather than omitting models silently. No external or Person Directory tools are included in this first Query-only slice.
