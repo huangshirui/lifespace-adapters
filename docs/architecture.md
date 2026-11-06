@@ -145,18 +145,19 @@ advancedFilter? -> nested Canonical Boolean AST when genuinely needed
 
 `filters[]` and `advancedFilter` are mutually exclusive. Range/local-date-window values remain typed and are passed through for Core-owned time semantics. There is no Generic Query / Capability Query mode in the protocol surface.
 
-MCP read-only Worker MVP (candidate, not yet live-verified):
+MCP OAuth Resource Server candidate (not deployed):
 
 ```text
-Cloudflare Access Managed OAuth → verified Access assertion
-Identity /internal/v1/access/tokens → short-lived User JWT (resources:read)
-Core progressive discovery → MCP tools/list
-Core Canonical Query → MCP tools/call
+MCP Client → Identity OAuth (PKCE) → Account Consent
+           → Identity OAuth Protected Resource Server
+           → private current-state Identity introspection
+           → [pending] LifeSpace-approved Agent execution bridge
+           → Core scoped Discovery and Canonical Query
 ```
 
-Mutation/action projection, per-OAuth-client fine-grained Scope/Consent and deployment E2E remain unimplemented. Access OAuth login is the protocol boundary; neither this repo nor Identity creates a second user OAuth server for this MVP.
+The retired Access Managed OAuth Preview is **not** a compatibility or staging mode. The protected Resource Server does not exchange an Access assertion, and a user OAuth token never becomes a Core Agent/User JWT. `tools/list` and `tools/call` remain disabled (503) until Identity/Core issue a trusted, Space-scoped and revocation-aware execution context.
 
-This split keeps code review focused on whether LifeSpace semantics are projected correctly before transport choices add more moving parts.
+
 
 ## 7. Principal / Actor / Application Context（主体 / 执行者 / 应用上下文）
 
@@ -199,6 +200,6 @@ Applications such as ALOHA and HomeMew consume LifeSpace/adapter capabilities un
 
 The MCP Worker is reusable as **a protocol/transport runtime**, but ordinary Query/Data and future Console/Platform Admin capabilities are different security profiles, not interchangeable model selections. A Console MCP endpoint needs a distinct authorization profile, dedicated Worker/Access application and LifeSpace Platform Admin human actor proof plus executor. Such an endpoint is **not implemented** and is not automatically enabled by this Data MCP Adapter.
 
-Each adapter deploys separately under its own subdirectory. The CI for this repository runs cross-adapter tests but never deploys an adapter. The outward-facing MCP adapter's desired Staging mechanism is **Cloudflare Workers Previews** on a `workers.dev` URL, with no public production Worker route, a dedicated managed-OAuth Access policy and a read-only Application. Deployment-time settings and secret material are provisioned outside the public repository. In particular Preview Service Bindings target the destination Worker's regular deployed version, so MCP Preview must bind only Staging Identity/Core deployments, not the same-name target's Preview or a Production target.
+Each adapter deploys separately under its own subdirectory. The CI for this repository runs cross-adapter tests but never deploys an adapter. The **old Managed OAuth Worker Preview** and its Cloudflare Access applications have been retired. The new Identity OAuth Protected Resource Server has a synthetic CI-only Wrangler dry-run profile. It has no live deployment configuration or automatic rollout path.
 
-The former custom-domain Staging Worker and Access application were retired by the project owner. The isolated Worker Preview is now the sole Staging endpoint; a passing CI/Preview deployment is still not live OAuth → Identity → Core client evidence.
+Staging implementation must use a separate protected Resource Server deployment, exact Identity OAuth resource allowlist and dedicated introspection secret, plus a LifeSpace-owned trusted Agent execution bridge. The same-environment Identity/Core Services remain authoritative; production deployment remains independently gated.
