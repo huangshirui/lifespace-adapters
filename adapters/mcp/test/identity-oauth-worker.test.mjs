@@ -232,16 +232,18 @@ test("host-origin mismatch, CORS origin, query/path confusion and wrong transpor
 });
 
 
-function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false } = {}) {
+function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1 } = {}) {
   const calls = [];
   const signToken = ["eyJ" + "syntheticheader", "syntheticpayload", "syntheticsignature"].join(".");
   const schema = "a".repeat(64);
+  const modelKeys = modelCount === 1 ? ["task"]
+    : Array.from({ length: modelCount }, (_unused, index) => "task_" + String(index).padStart(2, "0"));
   const inventory = { data: {
     semanticDetailPathTemplate: "/api/v1/spaces/{spaceId}/_discovery/models/{modelKey}",
-    models: [{ key: "task", version: 3, schemaHash: schema }],
+    models: modelKeys.map(key => ({ key, version: 3, schemaHash: schema })),
     spaces: [{
       spaceId: wrongSpace ? "spc_other" : "spc_synthetic",
-      spaceName: "Synthetic", models: [{ modelKey: "task", access: ["read"] }],
+      spaceName: "Synthetic", models: modelKeys.map(key => ({ modelKey: key, access: ["read"] })),
     }],
   } };
   const detail = { data: {
@@ -292,9 +294,11 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       if (path === "/api/v1/me/_discovery/inventory") return Response.json(inventory);
       if (path.endsWith("/_discovery/models/batch")) {
         assert.equal(init.method, "POST");
-        assert.deepEqual(JSON.parse(init.body), { modelKeys: ["task"] });
+        assert.deepEqual(JSON.parse(init.body), { modelKeys });
         return Response.json({ data: {
-          models: [{ modelKey: "task", detail: detail.data }],
+          models: modelKeys.map(modelKey => ({
+            modelKey, detail: { ...detail.data, key: modelKey },
+          })),
         } });
       }
       if (path.endsWith("/records/query")) return Response.json({ data: { items: [{ title: "Synthetic only" }] } });
@@ -317,6 +321,20 @@ test("OAuth Agent Direct tools/list uses only Identity-minted Core JWT and scope
     "IDENTITY /oauth/execution-tokens",
     "CORE /api/v1/me/_discovery/inventory",
     "CORE /api/v1/spaces/spc_synthetic/_discovery/models/batch",
+  ]);
+});
+
+test("tools/list projects 20 authorized Models in one Core batch request, not 20 Worker calls", async () => {
+  const f = connectedFixture({ modelCount: 20 });
+  const response = await handleIdentityOAuthMcp(rpc("tools/list"), f.env);
+  assert.equal(response.status, 200);
+  const data = await response.json();
+  assert.equal(data.result.tools.length, 20);
+  assert.equal(new Set(data.result.tools.map(item => item.name)).size, 20);
+  assert.equal(f.calls.filter(x => x.service === "CORE").length, 2);
+  assert.deepEqual(f.calls.filter(x => x.service === "CORE").map(x => x.path), [
+    "/api/v1/me/_discovery/inventory",
+    "/api/v1/spaces/spc_synthetic/_discovery/models/batch",
   ]);
 });
 
