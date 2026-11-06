@@ -80,14 +80,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Syntax check MCP projection and Managed OAuth Worker
+      - name: Syntax check canonical MCP projection and Identity OAuth Resource Worker
         run: |
           node --check adapters/mcp/src/progressive-discovery.mjs
           node --check adapters/mcp/src/projection.mjs
-          node --check adapters/mcp/src/worker.mjs
           node --check adapters/mcp/src/identity-oauth-worker.mjs
-          node --check adapters/mcp/scripts/build-preview-config.mjs
-      - name: Test MCP projection and Managed OAuth Worker
+      - name: Test MCP query projection and Identity OAuth Protected Resource
         run: node --test adapters/mcp/test/*.test.mjs
       - name: Dry-run independent Identity OAuth MCP Resource Server package
         run: >-
