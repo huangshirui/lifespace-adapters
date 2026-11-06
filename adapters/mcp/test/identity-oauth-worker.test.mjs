@@ -42,6 +42,29 @@ function rpc(method, opts = {}) {
   });
 }
 
+function modernRpc(method, opts = {}) {
+  const meta = {
+    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+    "io.modelcontextprotocol/clientCapabilities": {},
+    "io.modelcontextprotocol/clientInfo": { name: "synthetic-modern-client", version: "1.0" },
+    ...(opts.meta || {}),
+  };
+  const params = { ...(opts.params || {}), _meta: meta };
+  return new Request(RESOURCE, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: "Bearer " + TOKEN,
+      "MCP-Protocol-Version": "2026-07-28",
+      "Mcp-Method": method,
+      ...(method === "tools/call" ? { "Mcp-Name": params.name } : {}),
+      ...(opts.headers || {}),
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 42, method, params }),
+  });
+}
+
 test("RFC 9728 metadata lists Identity as the AS, not Cloudflare Managed OAuth", async () => {
   const f = fixture();
   for (const path of ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp/" + SERVER_ID]) {
@@ -307,6 +330,58 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
   };
   return { env, calls };
 }
+
+test("2026-07-28 stateless server/discover advertises both modern and legacy protocols", async () => {
+  const f = connectedFixture();
+  const response = await handleIdentityOAuthMcp(modernRpc("server/discover"), f.env);
+  assert.equal(response.status, 200);
+  const data = (await response.json()).result;
+  assert.equal(data.resultType, "complete");
+  assert.deepEqual(data.supportedVersions, ["2026-07-28", "2025-11-25"]);
+  assert.ok(data._meta["io.modelcontextprotocol/serverInfo"].name);
+  assert.deepEqual(f.calls.map(x => x.path), ["/oauth/introspect"]);
+  // The original OAuth legacy handshake is intentionally not removed.
+  const legacy = await handleIdentityOAuthMcp(rpc("initialize"), f.env);
+  assert.equal(legacy.status, 200);
+  assert.equal((await legacy.json()).result.protocolVersion, "2025-11-25");
+});
+
+test("modern tools/list and tools/call use per-request metadata and batched Core authority", async () => {
+  const f = connectedFixture();
+  const listed = await handleIdentityOAuthMcp(modernRpc("tools/list"), f.env);
+  assert.equal(listed.status, 200);
+  const list = (await listed.json()).result;
+  assert.equal(list.resultType, "complete");
+  assert.equal(list.cacheScope, "private");
+  assert.equal(list.tools[0].name, "lifespace.query.task");
+  const called = await handleIdentityOAuthMcp(modernRpc("tools/call", {
+    params: { name: "lifespace.query.task", arguments: { spaceId: "spc_synthetic" } },
+  }), f.env);
+  assert.equal(called.status, 200);
+  const result = (await called.json()).result;
+  assert.equal(result.resultType, "complete");
+  assert.equal(JSON.parse(result.content[0].text).items[0].title, "Synthetic only");
+  assert.equal(f.calls.filter(x => x.path.endsWith("/_discovery/models/batch")).length, 2);
+});
+
+test("modern headers/body mismatch, unsupported revision and legacy-only methods fail closed", async () => {
+  for (const [request, expectedStatus, expectedCode] of [
+    [modernRpc("tools/list", { headers: { "Mcp-Method": "tools/call" } }), 400, -32020],
+    [modernRpc("tools/list", { headers: { "MCP-Protocol-Version": "2025-11-25" } }), 400, -32020],
+    [modernRpc("tools/list", { meta: { "io.modelcontextprotocol/protocolVersion": "1900-01-01" } }), 400, -32020],
+    [modernRpc("tools/list", { headers: { "MCP-Protocol-Version": "1900-01-01" } }), 400, -32022],
+    [modernRpc("tools/call", { params: { name: "lifespace.query.task", arguments: {} },
+      headers: { "Mcp-Name": "lifespace.query.other" } }), 400, -32020],
+    [modernRpc("initialize"), 404, -32601],
+    [modernRpc("ping"), 404, -32601],
+  ]) {
+    const f = connectedFixture();
+    const response = await handleIdentityOAuthMcp(request, f.env);
+    assert.equal(response.status, expectedStatus);
+    assert.equal((await response.json()).error.code, expectedCode);
+    assert.equal(f.calls.some(x => x.service === "CORE"), false);
+  }
+});
 
 test("OAuth Agent Direct tools/list uses only Identity-minted Core JWT and scoped current discovery", async () => {
   const f = connectedFixture();
