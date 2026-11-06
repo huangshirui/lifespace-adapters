@@ -151,11 +151,12 @@ MCP OAuth Resource Server candidate (not deployed):
 MCP Client → Identity OAuth (PKCE) → Account Consent
            → Identity OAuth Protected Resource Server
            → private current-state Identity introspection
-           → [pending] LifeSpace-approved Agent execution bridge
+           → Identity-approved Agent Direct read-only execution bridge
+           → Core rechecks current OAuth access and Space/Grant authority
            → Core scoped Discovery and Canonical Query
 ```
 
-The retired Access Managed OAuth Preview is **not** a compatibility or staging mode. The protected Resource Server does not exchange an Access assertion, and a user OAuth token never becomes a Core Agent/User JWT. `tools/list` and `tools/call` remain disabled (503) until Identity/Core issue a trusted, Space-scoped and revocation-aware execution context.
+The retired Access Managed OAuth Preview is **not** a compatibility or staging mode. The protected Resource Server does not exchange an Access assertion, and a user OAuth token never becomes a Core Agent/User JWT. Candidate `tools/list` and `tools/call` use this context in current synthetic tests, fail closed if absent, and remain **undeployed** until the matching LifeSpace bridge and staging configuration are verified.
 
 
 
