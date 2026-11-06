@@ -11,6 +11,9 @@ const MAX_RESULT_BYTES = 131072;
 const MAX_DISCOVERED_MODELS = 32;
 const MAX_TOKEN_LENGTH = 1024;
 const VERSION = "2025-11-25";
+const MODERN_VERSION = "2026-07-28";
+const SUPPORTED_VERSIONS = [MODERN_VERSION, VERSION];
+const SERVER_INFO = Object.freeze({ name: "lifespace-identity-oauth-mcp", version: "0.3.0-candidate" });
 
 function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
@@ -270,12 +273,63 @@ function validOrigin(request, config) {
   return header === null || header === config.origin;
 }
 
-function rpcResult(id, result) {
-  return json({ jsonrpc: "2.0", id, result });
+function rpcResult(id, result, modern = false) {
+  return json({ jsonrpc: "2.0", id, result: modern
+    ? {
+      resultType: "complete", ...result,
+      _meta: { ...result._meta, "io.modelcontextprotocol/serverInfo": SERVER_INFO },
+    }
+    : result });
 }
 
-function rpcError(id, code, message, status = 200) {
-  return json({ jsonrpc: "2.0", id, error: { code, message } }, status);
+function rpcError(id, code, message, status = 200, data) {
+  return json({ jsonrpc: "2.0", id, error: {
+    code, message, ...(data === undefined ? {} : { data }),
+  } }, status);
+}
+
+function decodeMcpName(raw) {
+  if (typeof raw !== "string") return null;
+  const encoded = /^=\\?base64\\?([A-Za-z0-9+/]+={0,2})\\?=$/u.exec(raw);
+  if (encoded) {
+    try {
+      return new TextDecoder("utf-8", { fatal: true })
+        .decode(Uint8Array.from(atob(encoded[1]), x => x.charCodeAt(0)));
+    } catch { return null; }
+  }
+  if (!/^[\\x20-\\x7e]+$/u.test(raw) || raw.trim() !== raw
+    || (raw.startsWith("=?base64?") && raw.endsWith("?="))) return null;
+  return raw;
+}
+
+function modernRequestError(request, message) {
+  const version = request.headers.get("mcp-protocol-version");
+  const params = message.params;
+  const meta = params && typeof params === "object" && !Array.isArray(params) ? params._meta : null;
+  const bodyVersion = meta && typeof meta === "object" ? meta["io.modelcontextprotocol/protocolVersion"] : null;
+  const modern = version === MODERN_VERSION || bodyVersion === MODERN_VERSION;
+  if (version && !SUPPORTED_VERSIONS.includes(version)) {
+    return { modern: false, error: rpcError(message.id, -32022, "Unsupported protocol version", 400, {
+      supported: SUPPORTED_VERSIONS, requested: version,
+    }) };
+  }
+  if (!modern) return { modern: false };
+  // 2026-07-28 has no session; every RPC carries its capabilities and
+  // matching HTTP routing headers. Missing/mismatched metadata fails closed.
+  if (version !== MODERN_VERSION || bodyVersion !== MODERN_VERSION
+    || request.headers.get("mcp-method") !== message.method
+    || !meta || typeof meta !== "object" || Array.isArray(meta)
+    || !meta["io.modelcontextprotocol/clientCapabilities"]
+    || typeof meta["io.modelcontextprotocol/clientCapabilities"] !== "object"
+    || Array.isArray(meta["io.modelcontextprotocol/clientCapabilities"])) {
+    return { modern: true, error: rpcError(message.id, -32020, "Header mismatch or missing modern request metadata", 400) };
+  }
+  if (message.method === "tools/call") {
+    if (decodeMcpName(request.headers.get("mcp-name")) !== params?.name) {
+      return { modern: true, error: rpcError(message.id, -32020, "Mcp-Name header mismatch", 400) };
+    }
+  }
+  return { modern: true };
 }
 
 export async function handleIdentityOAuthMcp(request, env) {
@@ -327,21 +381,31 @@ export async function handleIdentityOAuthMcp(request, env) {
       || (typeof message.id === "number" && Number.isFinite(message.id))
     ))) return rpcError(null, -32600, "Invalid request", 400);
 
-  if (message.method === "notifications/initialized" && message.id === undefined) {
+  const checked = modernRequestError(request, message);
+  if (checked.error) return checked.error;
+  const modern = checked.modern;
+  if (modern && message.id !== undefined && message.method === "server/discover") {
+    return rpcResult(message.id, {
+      supportedVersions: SUPPORTED_VERSIONS,
+      capabilities: { tools: { listChanged: false } },
+      ttlMs: 0, cacheScope: "private",
+    }, true);
+  }
+  if (!modern && message.method === "notifications/initialized" && message.id === undefined) {
     return new Response(null, { status: 202 });
   }
   if (message.id === undefined) return rpcError(null, -32600, "Unexpected notification", 400);
-  if (message.method === "initialize") {
+  if (!modern && message.method === "initialize") {
     return rpcResult(message.id, {
       protocolVersion: VERSION,
       capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: "lifespace-identity-oauth-mcp", version: "0.2.0-candidate" },
+      serverInfo: SERVER_INFO,
     });
   }
-  if (message.method === "ping") return rpcResult(message.id, {});
+  if (!modern && message.method === "ping") return rpcResult(message.id, {});
 
   if (message.method !== "tools/list" && message.method !== "tools/call") {
-    return rpcError(message.id, -32601, "Method not found");
+    return rpcError(message.id, -32601, "Method not found", modern ? 404 : 200);
   }
   const execution = await coreExecution(authorized, request, config, env);
   if (execution.error) return json({ error: execution.error }, 503);
@@ -350,10 +414,10 @@ export async function handleIdentityOAuthMcp(request, env) {
   if (current.error) return json({ error: current.error }, 503);
   if (message.method === "tools/list") {
     if (message.params && (typeof message.params !== "object" || Array.isArray(message.params)
-      || Object.keys(message.params).some(key => key !== "cursor") || message.params.cursor)) {
+      || Object.keys(message.params).some(key => key !== "cursor" && !(modern && key === "_meta")) || message.params.cursor)) {
       return rpcError(message.id, -32602, "Unsupported pagination parameters");
     }
-    return rpcResult(message.id, { tools: current.projected.tools });
+    return rpcResult(message.id, { tools: current.projected.tools, ...(modern ? { ttlMs: 0, cacheScope: "private" } : {}) }, modern);
   }
 
   if (!message.params || typeof message.params !== "object" || Array.isArray(message.params)
@@ -375,10 +439,10 @@ export async function handleIdentityOAuthMcp(request, env) {
   const result = await coreJson(env, execution.token, operation.path, operation.method, operation.body);
   if (result.error) return rpcResult(message.id, {
     isError: true, content: [{ type: "text", text: result.error }],
-  });
+  }, modern);
   return rpcResult(message.id, {
     content: [{ type: "text", text: JSON.stringify(result.payload?.data ?? result.payload) }],
-  });
+  }, modern);
 }
 
 export default { fetch: handleIdentityOAuthMcp };
