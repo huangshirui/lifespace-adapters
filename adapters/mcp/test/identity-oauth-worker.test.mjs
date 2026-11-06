@@ -4,7 +4,8 @@ import {
   handleIdentityOAuthMcp, oauthResourceConfig, validateIntrospection,
 } from "../src/identity-oauth-worker.mjs";
 
-const RESOURCE = "https://resource.example.com/mcp";
+const SERVER_ID = "mcp_" + "a".repeat(32);
+const RESOURCE = "https://resource.example.com/mcp/" + SERVER_ID;
 const ISSUER = "https://identity.example.com";
 const TOKEN = "lsp_oat_" + "A".repeat(43);
 const SECRET = "synthetic-resource-secret-" + "S".repeat(40);
@@ -43,7 +44,7 @@ function rpc(method, opts = {}) {
 
 test("RFC 9728 metadata lists Identity as the AS, not Cloudflare Managed OAuth", async () => {
   const f = fixture();
-  for (const path of ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"]) {
+  for (const path of ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp/" + SERVER_ID]) {
     const result = await handleIdentityOAuthMcp(new Request("https://resource.example.com" + path), f.env);
     assert.equal(result.status, 200);
     assert.deepEqual(await result.json(), {
@@ -54,7 +55,8 @@ test("RFC 9728 metadata lists Identity as the AS, not Cloudflare Managed OAuth",
   assert.equal(f.calls.length, 0);
   assert.deepEqual(oauthResourceConfig(base), {
     issuer: ISSUER, resource: RESOURCE, origin: "https://resource.example.com",
-    metadata: "https://resource.example.com/.well-known/oauth-protected-resource/mcp",
+    path: "/mcp/" + SERVER_ID,
+    metadata: "https://resource.example.com/.well-known/oauth-protected-resource/mcp/" + SERVER_ID,
   });
 });
 
@@ -65,7 +67,7 @@ test("MCP 401 advertises protected-resource metadata before making any Identity/
     const req = rpc("initialize", { headers: { authorization: authorization || "" } });
     const result = await handleIdentityOAuthMcp(req, f.env);
     assert.equal(result.status, 401);
-    assert.match(result.headers.get("www-authenticate") || "", /resource_metadata="https:\/\/resource\.example\.com\/\.well-known\/oauth-protected-resource\/mcp"/u);
+    assert.match(result.headers.get("www-authenticate") || "", /resource_metadata="https:\/\/resource\.example\.com\/\.well-known\/oauth-protected-resource\/mcp\/mcp_[a-f0-9]{32}"/u);
     assert.match(result.headers.get("www-authenticate") || "", /scope="resources:read"/u);
   }
   assert.equal(f.calls.length, 0);
@@ -92,6 +94,7 @@ test("revoked, expired, wrong-resource, mismatched agent or client is rejected b
   for (const payload of [
     { ...active, active: false },
     { ...active, resource: "https://other.example.com/mcp" },
+    { ...active, resource: "https://resource.example.com/mcp/mcp_" + "b".repeat(32) },
     { ...active, exp: Math.floor(Date.now() / 1000) - 2 },
     { ...active, agent_id: "" },
     { ...active, client_id: "" },
@@ -132,10 +135,12 @@ test("correct authorization does not yet grant Core execution or User Delegation
 test("malformed config or missing internal resource secret fails closed without token disclosure", async () => {
   for (const env of [
     { ...base, MCP_OAUTH_ISSUER: "http://identity.example.com" },
-    { ...base, MCP_RESOURCE_URI: "https://resource.example.com/mcp?scope=all" },
+    { ...base, MCP_RESOURCE_URI: RESOURCE + "?scope=all" },
+    { ...base, MCP_RESOURCE_URI: "https://resource.example.com/mcp" },
+    { ...base, MCP_RESOURCE_URI: "https://resource.example.com/mcp/" + SERVER_ID + "/other" },
     { ...base, MCP_RESOURCE_URI: "https://resource.example.com/other" },
     { ...base, MCP_OAUTH_ISSUER: "https://identity.example.com/custom" },
-    { ...base, MCP_RESOURCE_URI: "https://*.example.com/mcp" },
+    { ...base, MCP_RESOURCE_URI: "https://*.example.com/mcp/" + SERVER_ID },
   ]) {
     const r = await handleIdentityOAuthMcp(rpc("initialize"), env);
     assert.equal(r.status, 503);
@@ -145,6 +150,22 @@ test("malformed config or missing internal resource secret fails closed without 
     OAUTH_RESOURCE_SERVER_SECRET: "",
   });
   assert.equal(r.status, 503);
+});
+
+test("a different configured mcp_* Server ID on the same host cannot reuse OAuth bearer", async () => {
+  const wrongServer = "mcp_" + "b".repeat(32);
+  const f = fixture();
+  const wrongPath = "https://resource.example.com/mcp/" + wrongServer;
+  const r = await handleIdentityOAuthMcp(new Request(wrongPath, {
+    method: "POST", headers: {
+      authorization: "Bearer " + TOKEN,
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", method: "initialize", id: 1 }),
+  }), f.env);
+  assert.equal(r.status, 404);
+  assert.equal(f.calls.length, 0);
 });
 
 test("host-origin mismatch, CORS origin, query/path confusion and wrong transport are denied", async () => {
