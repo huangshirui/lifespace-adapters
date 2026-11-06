@@ -261,7 +261,6 @@ export async function handleIdentityOAuthMcp(request, env) {
   }
   const config = oauthResourceConfig(env, request.url);
   if (!config) return json({ error: "Resource server unavailable" }, 503);
-  const url = new URL(request.url);
   if (url.origin !== config.origin) return json({ error: "Invalid resource host" }, 403);
 
   if ((url.pathname === META_PATH || url.pathname === META_PATH + config.path) && request.method === "GET") {
