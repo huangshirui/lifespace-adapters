@@ -106,3 +106,8 @@ Core must still check the current enabled Server's selected model operations,
 Agent/Space/Data Grants and Model Policy on every request (Issue #482).
 This is a candidate, not a deployed multi-Server runtime; the public Adapter
 repository contains only synthetic hostnames and no live infrastructure secrets.
+
+
+## Modern MCP and legacy compatibility
+
+The MCP Resource transport supports both `2026-07-28` stateless per-request metadata and `2025-11-25` legacy handshake. Modern `server/discover`, `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name` validation, HeaderMismatch and UnsupportedProtocolVersion errors are tested using synthetic requests. Neither protocol version changes LifeSpace Principal/Actor/Delegation: current read-only Agent Direct authority continues to be verified by Core. Protocol interoperability in live ChatGPT/Claude clients and Identity client registration are still pending Staging acceptance. 
