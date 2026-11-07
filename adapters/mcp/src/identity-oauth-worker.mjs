@@ -213,6 +213,12 @@ async function coreJson(env, coreToken, path, method = "GET", body) {
     });
   } catch { return { error: "CORE_UNAVAILABLE" }; }
   if (!response.ok) {
+    // An invalid Canonical Query is a caller error, not a Core outage.
+    // Never forward Core's raw error body: it may contain private details.
+    if (method === "POST" && path.endsWith("/records/query")
+      && (response.status === 400 || response.status === 422)) {
+      return { error: "INVALID_QUERY_ARGUMENTS" };
+    }
     return { error: response.status === 401 || response.status === 403
       ? "CORE_PERMISSION_DENIED" : "CORE_UNAVAILABLE" };
   }
