@@ -97,6 +97,11 @@ jobs:
           npx --yes --package wrangler@4.135.0 wrangler deploy
           --dry-run --config adapters/mcp/wrangler.identity-oauth.jsonc
           --outdir .wrangler/ci-identity-oauth-dry-run
+      - name: Dry-run restricted private MCP staging Worker, without deployment
+        run: >-
+          npx --yes --package wrangler@4.135.0 wrangler deploy
+          --dry-run --config adapters/mcp/wrangler.staging.jsonc
+          --outdir .wrangler/ci-mcp-staging-dry-run
 
 
   secret-scan:
