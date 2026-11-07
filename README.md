@@ -82,14 +82,14 @@ The repository is moving from **contract alignment** into the first verified ada
 - Public-repository safety baseline: defined.
 - Canonical LifeSpace contract-consumption rules: defined.
 - MCP Canonical Query Projection Core: **implemented and tested** against synthetic current Canonical Query semantic fixtures.
-- MCP OAuth Protected Resource Server: **Identity OAuth-based candidate, synthetically tested, not deployed**, with current-state exact-resource token introspection and limited protocol handshake. It deliberately blocks data tools pending a verified Core Agent execution bridge.
+- MCP OAuth Protected Resource Server: **Identity OAuth-based candidate, synthetically tested, not deployed**. OAuth exact-resource introspection and the Identity-issued, single-Space Agent Direct Core bridge now support candidate read-only `tools/list` and `tools/call`; live deployment/E2E remain pending.
 - MCP production/staging runtime: **not yet provisioned**; CI dry-runs a synthetic separate Identity OAuth Resource Server only. The old Cloudflare Access Managed OAuth Worker Preview implementation and deployment generator have been removed.
 
 The implemented projection covers Progressive Discovery loading, exactly one Canonical Query Tool per selected model, an Agent-friendly default schema (`search`, flat typed `filters[]`, ordered `sort[]`, `limit`, `cursor`), optional `advancedFilter` for nested Boolean expressions, typed temporal/range operands, Space-scoped execution bindings and canonical modelKey-addressed POST request construction.
 
 Search and Filter are projected as parallel candidate-selection facets and compile to the same Canonical Query. Legacy Generic/Capability query metadata does not create a second MCP surface and is not preserved as an adapter compatibility mode.
 
-The next milestone is LifeSpace-owned, Space-bound Agent execution authorization followed by a separately protected **Identity OAuth MCP Resource Server** Staging deployment and OAuth/Agent/Core end-to-end validation. No legacy Access JWT assertion or Managed OAuth Preview compatibility is planned.
+The next milestone is to verify the matching [LifeSpace execution bridge candidate](https://github.com/huangshirui/LifeSpace/pull/480), then independently stage the protected **Identity OAuth MCP Resource Server** with real end-to-end OAuth/Agent/Core authorization and revocation tests. No legacy Access JWT assertion or Managed OAuth Preview compatibility is planned.
 
 ## Documentation（文档）
 
