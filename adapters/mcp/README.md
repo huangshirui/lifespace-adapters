@@ -14,7 +14,7 @@ MCP Client
   ├─ LifeSpace Account: Application / Space / Agent consent
   └─ MCP Protected Resource Server (this adapter)
        ├─ private, exact-resource Identity token introspection
-       └─ [pending] trusted Space-scoped Agent execution bridge → Core
+       └─ short-lived read-only Agent Direct execution → Core (current Grants checked)
 ```
 
 **Do not confuse OAuth token acceptance with Core data authorization.**
@@ -22,7 +22,7 @@ An `lsp_oat_*` OAuth token identifies a currently authorized Client/Application/
 
 ## Files / 文件说明
 
-- `src/identity-oauth-worker.mjs`: independently packaged MCP OAuth Protected Resource Server, with RFC 9728 discovery, Bearer challenge, Identity introspection, scope/resource checks and limited MCP handshake.
+- `src/identity-oauth-worker.mjs`: independent MCP OAuth Protected Resource Server with RFC 9728 discovery, exact-resource Bearer introspection, Core Agent Direct read-only query bridge, and modern stateless/legacy MCP protocol handlers.
 - `test/identity-oauth-worker.test.mjs`: synthetic positive and deny-path tests for the new Resource Server.
 - `wrangler.identity-oauth.jsonc`: **synthetic local/CI dry-run**; no live hostname, Worker name, secret or binding.
 - `src/progressive-discovery.mjs`: Core-owned dynamic inventory and selected-model semantic loading, with drift protection.
@@ -33,7 +33,7 @@ An `lsp_oat_*` OAuth token identifies a currently authorized Client/Application/
 
 - `GET /.well-known/oauth-protected-resource` and the Resource-path-specific well-known endpoint return the fixed Identity OAuth Issuer and exact Resource identifier.
 - `POST /mcp/{mcp_*}` (one exact Core-issued Server ID) accepts only opaque `lsp_oat_*` bearer credentials and calls private Identity `POST /oauth/introspect` for **the exact requested Resource**. No browser Access JWT or server-only `lsa_*` is accepted as an MCP user credential.
-- `initialize`, `ping` and limited notifications are implemented.
+- Legacy `2025-11-25` `initialize`, `ping` and limited notifications remain implemented; modern `2026-07-28` `server/discover`, `tools/list`/`tools/call`, request headers and stateless response metadata are supported and synthetically tested.
 - `tools/list` and `tools/call` consume only the **Identity-issued read-only Agent Direct Core token** and project current Core-discovered models in the single Space selected by Consent. Execution is still revalidated by Core. They return **503** if the matching LifeSpace Identity/Core bridge, signatures, bindings or current-scoped discovery are unavailable. Synthetic tests pass, but this code is **not deployed**.
 
 ## Deployment boundary / 部署边界
@@ -48,9 +48,9 @@ No live environment is configured in source code. A later reviewed staging deplo
 
 The adapter sends the original public OAuth bearer only to **Identity** for introspection and token exchange. The new Core bearer is Agent Direct with `principal=agent`, `actor=agent`, `resources:read`, selected `spaceId`, `applicationId`, authorization and resource identifiers; User Delegation is not implied. Core independently checks every call with Identity and reevaluates current model/Data Grant authority.
 
-The future Core execution bridge must perform current authorization checks and prevent access outside the specifically authorized Space. Neither this adapter nor an OAuth client can declare User/Agent/Delegation authority by itself.
+The implemented Core execution bridge performs current authorization checks and prevents access outside the specifically authorized Space. Neither this adapter nor an OAuth client can declare User/Agent/Delegation authority by itself.
 
-Only after LifeSpace PR #480 and this Adapters PR pass their own tests and are separately staged with protected Resource/secret bindings, exact Identity allowlist, approved OAuth clients, real Core Query and revocation/cross-Space negative tests may Data Tools be called **live-ready**.
+Only after LifeSpace PRs #480 → #485 and Adapters PRs #29 → #30 are separately staged with protected Resource/secret bindings, Core dynamic per-Server authorization, approved OAuth clients, real Core Query and revocation/cross-Space negative tests may Data Tools be called **live-ready**.
 
 **Never deploy the retired Managed OAuth Preview or reuse its Worker/Access resources.** This repository has no ordinary CI environment deployment; CI performs synthetic tests and a Wrangler dry-run only.
 
