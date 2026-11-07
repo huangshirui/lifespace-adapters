@@ -33,7 +33,7 @@ The public OAuth bearer must never be forwarded as a LifeSpace Core JWT. The Cli
 **Candidate fail-closed status:** `initialize` and `ping` require current OAuth introspection. `tools/list` and `tools/call` are implemented using a private same-environment Identity/Core bridge, signed read-only Agent Direct token, single selected Space and fresh Core permission checks. They return 503 when bindings/bridge/projection are missing or inconsistent; unauthorized OAuth/Space/model operations are denied. This is **synthetically tested but not deployed**.
 
 The new Resource Server requires (in separately protected deployment configuration, never this public repository):
-- exact `MCP_RESOURCE_URI` (HTTPS URL ending in `/mcp`);
+- canonical multi-Server `MCP_RESOURCE_ORIGIN` (an exact trusted Core HTTPS origin, no trailing path); the private Adapter derives the current `/mcp/{mcp_*}` Resource from the forwarded request; or fixed `MCP_RESOURCE_URI` only for an isolated single-resource synthetic test;
 - exact `MCP_OAUTH_ISSUER`;
 - private `IDENTITY` Service Binding to same-environment LifeSpace Identity;
 - private `OAUTH_RESOURCE_SERVER_SECRET` shared only with same-environment Identity for introspection and read-only execution exchange;
@@ -91,3 +91,23 @@ Synthetic tests cover OAuth bearer/resource/scope rejection; current-state priva
 Still required before enabling **live** data tools: merge and staging deployment of LifeSpace's current-state Agent Direct execution bridge, exact OAuth Resource allowlisting, dedicated private service bindings/secrets, protected MCP Staging deployment, authorized OAuth Client registration, real Core discovery/query and revocation/cross-Space/delegation negative tests. **A passing CI or OAuth metadata document is not evidence of working MCP data access.**
 
 For current operator and implementation boundaries, see [MCP README](../adapters/mcp/README.md).
+
+
+## Server-specific OAuth Resource path / 按 MCP Server 的资源路径
+
+The canonical Resource identifier is an exact HTTPS URL ending in
+`/mcp/{serverId}` where `serverId` is the Core-issued `mcp_*` 32-hex ID.
+The RFC 9728 Resource metadata document is available at
+`/.well-known/oauth-protected-resource/mcp/{serverId}` on that same origin.
+Requests for other Server IDs, a token for another Resource, or the retired
+unscoped `/mcp` Resource fail closed. The OAuth Resource Server's one-resource
+packaging does **not** create Core MCP Server governance by itself: LifeSpace
+Core must still check the current enabled Server's selected model operations,
+Agent/Space/Data Grants and Model Policy on every request (Issue #482).
+This is a candidate, not a deployed multi-Server runtime; the public Adapter
+repository contains only synthetic hostnames and no live infrastructure secrets.
+
+
+## Modern MCP and legacy compatibility
+
+The MCP Resource transport supports both `2026-07-28` stateless per-request metadata and `2025-11-25` legacy handshake. Modern `server/discover`, `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name` validation, HeaderMismatch and UnsupportedProtocolVersion errors are tested using synthetic requests. Neither protocol version changes LifeSpace Principal/Actor/Delegation: current read-only Agent Direct authority continues to be verified by Core. Protocol interoperability in live ChatGPT/Claude clients and Identity client registration are still pending Staging acceptance. 

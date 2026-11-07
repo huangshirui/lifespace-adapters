@@ -4,6 +4,16 @@
   // No environment-specific names, routes or secrets are committed.
   "name": "example-lifespace-identity-oauth-mcp",
   "main": "src/identity-oauth-worker.mjs",
+  // These are synthetic placeholders. Real private Worker and binding names
+  // are provided only by reviewed environment-specific deployment workflows.
+  "vars": {
+    "MCP_RESOURCE_ORIGIN": "https://core.example.test",
+    "MCP_OAUTH_ISSUER": "https://identity.example.test"
+  },
+  "services": [
+    { "binding": "CORE", "service": "example-lifespace-core" },
+    { "binding": "IDENTITY", "service": "example-lifespace-identity" }
+  ],
   "compatibility_date": "2026-11-06",
   "workers_dev": false,
   "preview_urls": false,
