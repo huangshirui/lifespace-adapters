@@ -80,6 +80,20 @@ POST /api/v1/spaces/{spaceId}/models/{modelKey}/records/query
 
 Record Policies, current Grants, Delegation state, semantic validation and concurrency remain Core responsibilities. This layer never caches private records or recomputes authority.
 
+## Core query errors / Core 查询错误映射
+
+For a `tools/call` to the authorized Canonical Query endpoint, Core HTTP 400 or 422
+maps to an MCP tool `isError` result with the stable, sanitized
+`INVALID_QUERY_ARGUMENTS` code. This indicates invalid filter/cursor/query
+parameters, **not** a Core outage. The Adapter never forwards raw Core error
+bodies, since upstream details may contain private data.
+
+Core HTTP 401/403 remains `CORE_PERMISSION_DENIED`; network failures, 5xx,
+and other unclassified Core response statuses remain `CORE_UNAVAILABLE`.
+Failures while obtaining Core discovery are not client query validation errors:
+they still fail closed with HTTP 503. Core retains semantic validation and
+authorization ownership; this only changes protocol-specific error mapping.
+
 ## Prohibited surfaces / 禁止暴露
 
 Ordinary MCP tools must not expose Core/Identity Platform Admin endpoints, direct D1 queries, provider secrets, unscoped service credentials or cross-Space data. A different Console administrative MCP profile would require a separate design, credential and policy approval.
