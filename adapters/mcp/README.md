@@ -43,7 +43,7 @@ No live environment is configured in source code. A later reviewed staging deplo
 - **Isolated test-only single-resource mode:** `MCP_RESOURCE_URI` accepts a fixed canonical `/mcp/{mcp_*}` URL when `MCP_RESOURCE_ORIGIN` is absent; this does **not** implement dynamic Server provisioning.
 - `MCP_OAUTH_ISSUER`: exact LifeSpace Identity OAuth Issuer origin.
 - `IDENTITY`: private Service Binding to the **same environment's Identity Worker**.
-- `OAUTH_RESOURCE_SERVER_SECRET`: dedicated private Resource Server secret matching the Identity secret, supplied through protected deployment configuration only.
+- `OAUTH_RESOURCE_SERVER_SECRET`: dedicated Resource Server secret matching the Identity secret. The first **private Adapter Staging** deployment leaves this unset and fails closed. The owner-only **LifeSpace paired-secret Staging workflow** generates a random value and installs it directly on both exact Staging Workers; never duplicate it into GitHub Environment secrets.
 - `CORE`: private Service Binding to the **same environment's Core Worker**; no direct public Core origin or OAuth bearer forwarding.
 
 The adapter sends the original public OAuth bearer only to **Identity** for introspection and token exchange. The new Core bearer is Agent Direct with `principal=agent`, `actor=agent`, `resources:read`, selected `spaceId`, `applicationId`, authorization and resource identifiers; User Delegation is not implied. Core independently checks every call with Identity and reevaluates current model/Data Grant authority.
@@ -52,7 +52,7 @@ The implemented Core execution bridge performs current authorization checks and 
 
 Only after LifeSpace PRs #480 → #485 and Adapters PRs #29 → #30 are separately staged with protected Resource/secret bindings, Core dynamic per-Server authorization, approved OAuth clients, real Core Query and revocation/cross-Space negative tests may Data Tools be called **live-ready**.
 
-**Never deploy the retired Managed OAuth Preview or reuse its Worker/Access resources.** This repository has no ordinary CI environment deployment; CI performs synthetic tests and a Wrangler dry-run only.
+**Never deploy the retired Managed OAuth Preview or reuse its Worker/Access resources.** This repository has no automatic environment deployment. The owner-only reviewed-main manual Staging workflow deploys a private Worker without secrets; an independent LifeSpace owner-only workflow converges its Resource Server secret with Identity Staging. CI performs synthetic tests and both synthetic/private Wrangler dry-runs.
 
 See [the adapter design](../../docs/mcp-adapter.md) and [canonical LifeSpace contracts](../../docs/lifespace-contract-consumption.md).
 
