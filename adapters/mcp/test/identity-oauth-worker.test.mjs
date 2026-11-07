@@ -278,7 +278,7 @@ test("host-origin mismatch, CORS origin, query/path confusion and wrong transpor
 });
 
 
-function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1 } = {}) {
+function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false } = {}) {
   const calls = [];
   const signToken = ["eyJ" + "syntheticheader", "syntheticpayload", "syntheticsignature"].join(".");
   const schema = "a".repeat(64);
@@ -337,7 +337,10 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       assert.equal(init.headers.authorization, "Bearer " + signToken);
       assert.ok(!JSON.stringify(init.headers).includes(TOKEN));
       if (denied && path.endsWith("/records/query")) return Response.json({ error: "forbidden" }, { status: 403 });
-      if (path === "/api/v1/me/_discovery/inventory") return Response.json(inventory);
+      if (path === "/api/v1/me/_discovery/inventory") {
+        if (discoveryStatus !== 200) return Response.json({ error: "synthetic upstream details" }, { status: discoveryStatus });
+        return Response.json(inventory);
+      }
       if (path.endsWith("/_discovery/models/batch")) {
         assert.equal(init.method, "POST");
         assert.deepEqual(JSON.parse(init.body), { modelKeys });
@@ -347,7 +350,14 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
           })),
         } });
       }
-      if (path.endsWith("/records/query")) return Response.json({ data: { items: [{ title: "Synthetic only" }] } });
+      if (path.endsWith("/records/query")) {
+        if (queryThrows) throw new Error("Synthetic private upstream exception");
+        if (queryStatus !== 200) {
+          return Response.json({ error: { code: "SYNTHETIC_PRIVATE_ERROR", message: "Do not expose upstream details" } },
+            { status: queryStatus });
+        }
+        return Response.json({ data: { items: [{ title: "Synthetic only" }] } });
+      }
       throw new Error("Unexpected Core endpoint " + path);
     } },
   };
@@ -477,6 +487,54 @@ test("Core current-state denial is returned as a denied tool operation, never re
   assert.equal(payload.result.isError, true);
   assert.equal(payload.result.content[0].text, "CORE_PERMISSION_DENIED");
   assert.ok(!JSON.stringify(f.calls.filter(x => x.service === "CORE")).includes(TOKEN));
+});
+
+test("Core Canonical Query 400/422 becomes a bounded MCP invalid-arguments tool result", async () => {
+  for (const status of [400, 422]) {
+    const f = connectedFixture({ queryStatus: status });
+    const response = await handleIdentityOAuthMcp(modernRpc("tools/call", {
+      params: { name: "lifespace.query.task", arguments: {
+        spaceId: "spc_synthetic", cursor: "synthetic-invalid-cursor",
+      } },
+    }), f.env);
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.result.resultType, "complete");
+    assert.equal(payload.result.isError, true);
+    assert.deepEqual(payload.result.content, [{ type: "text", text: "INVALID_QUERY_ARGUMENTS" }]);
+    assert.equal(f.calls.filter(call => call.path.endsWith("/records/query")).length, 1);
+    assert.ok(!JSON.stringify(payload).includes("SYNTHETIC_PRIVATE_ERROR"));
+    assert.ok(!JSON.stringify(payload).includes(TOKEN));
+  }
+});
+
+test("Core permission failures, upstream outages and discovery errors remain fail-closed", async () => {
+  for (const [queryStatus, expected] of [
+    [401, "CORE_PERMISSION_DENIED"], [403, "CORE_PERMISSION_DENIED"],
+    [429, "CORE_UNAVAILABLE"], [500, "CORE_UNAVAILABLE"],
+  ]) {
+    const f = connectedFixture({ queryStatus });
+    const response = await handleIdentityOAuthMcp(rpc("tools/call", {
+      params: { name: "lifespace.query.task", arguments: { spaceId: "spc_synthetic" } },
+    }), f.env);
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.result.isError, true);
+    assert.equal(payload.result.content[0].text, expected);
+    assert.ok(!JSON.stringify(payload).includes("SYNTHETIC_PRIVATE_ERROR"));
+  }
+  const interrupted = connectedFixture({ queryThrows: true });
+  const failed = await handleIdentityOAuthMcp(rpc("tools/call", {
+    params: { name: "lifespace.query.task", arguments: { spaceId: "spc_synthetic" } },
+  }), interrupted.env);
+  assert.equal((await failed.json()).result.content[0].text, "CORE_UNAVAILABLE");
+
+  // Discovery does not accept user Canonical Query parameters; a 400 here
+  // remains an upstream failure rather than an invalid tool argument.
+  const discovery = connectedFixture({ discoveryStatus: 400 });
+  const response = await handleIdentityOAuthMcp(rpc("tools/list"), discovery.env);
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: "CORE_UNAVAILABLE" });
 });
 
 test("Core returned a different Space or Identity exchange mismatched Agent context: fail closed", async () => {
