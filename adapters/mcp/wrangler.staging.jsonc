@@ -8,6 +8,7 @@
   "workers_dev": false,
   "preview_urls": false,
   "vars": {
+    "ENVIRONMENT": "staging",
     "MCP_RESOURCE_ORIGIN": "https://core-staging.aisr.online",
     "MCP_OAUTH_ISSUER": "https://auth-staging.aisr.online"
   },
