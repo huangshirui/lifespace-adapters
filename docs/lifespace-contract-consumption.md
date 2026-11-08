@@ -167,3 +167,10 @@ The provider-facing Notion adapter explicitly consumes LifeSpace `apps/core/exte
 ## Dynamic External business models
 
 External inventory entries use `(spaceId,key,schemaHash)` rather than a Native immutable model version. One business key can have different schemas in different Spaces. Load and verify each readable entry separately; never project one Space's fields over another. MCP emits one query tool/binding per External Space entry using the canonical query descriptor, preserves provider-defined ordering and Core-owned current authority, and rejects drift. External output has no Native record version. No Provider payload is cached or mirrored by this projection. This is a tested projection slice, not a deployed MCP transport/server.
+
+## Staging Native write candidate / Staging 原生写入候选
+
+Development-only Agent Direct CRUD is gated by Staging + explicit read/write
+OAuth consent + Core's exact current model contract and authority preview.
+Production remains read-only; User Delegation is not implicitly enabled.
+Contract, argument and deployment details: [MCP adapter](mcp-adapter.md).

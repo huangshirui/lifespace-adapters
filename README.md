@@ -115,3 +115,10 @@ Sensitive vulnerabilities must not be reported through public Issue / PR content
 ## Provider adapters / 外部数据适配器
 
 `adapters/notion` consumes LifeSpace External Adapter contract v1 and projects Notion data-source schema/records into the Core-owned compatible model. It owns Provider API/Secret/query/rate-limit behavior, has no LifeSpace D1/ACL, and is separate from outward-facing MCP projection. See `adapters/notion/README.md`. Tests use synthetic data; no deployment is claimed.
+
+## Staging Native write candidate / Staging 原生写入候选
+
+Development-only Agent Direct CRUD is gated by Staging + explicit read/write
+OAuth consent + Core's exact current model contract and authority preview.
+Production remains read-only; User Delegation is not implicitly enabled.
+Contract, argument and deployment details: [MCP adapter](docs/mcp-adapter.md).

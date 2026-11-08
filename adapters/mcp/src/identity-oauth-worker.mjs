@@ -1,3 +1,4 @@
+import { projectNativeMutations, buildNativeMutation } from "./mutation-projection.mjs";
 import { loadSelectedModelSemantics } from "./progressive-discovery.mjs";
 import { buildLifeSpaceQueryRequest, projectSelectedModelsToMcp } from "./projection.mjs";
 
@@ -13,7 +14,7 @@ const MAX_TOKEN_LENGTH = 1024;
 const VERSION = "2025-11-25";
 const MODERN_VERSION = "2026-07-28";
 const SUPPORTED_VERSIONS = [MODERN_VERSION, VERSION];
-const SERVER_INFO = Object.freeze({ name: "lifespace-identity-oauth-mcp", version: "0.3.0-candidate" });
+const SERVER_INFO = Object.freeze({ name: "lifespace-identity-oauth-mcp", version: "0.4.0-candidate" });
 
 function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
@@ -187,7 +188,8 @@ async function coreExecution(authorized, request, config, env) {
     || typeof data.accessToken !== "string"
     || data.accessToken.length > 5000
     || !/^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(data.accessToken)
-    || data.scope !== "resources:read"
+    || !["resources:read", "resources:read resources:write"].includes(data.scope)
+    || data.scope.split(" ").some(scope => !authorized.context.scopes.includes(scope))
     || !Number.isSafeInteger(data.expiresIn) || data.expiresIn < 1 || data.expiresIn > 60
     || data.applicationId !== authorized.context.applicationId
     || data.agentId !== authorized.context.agentId
@@ -198,7 +200,9 @@ async function coreExecution(authorized, request, config, env) {
 }
 
 async function coreJson(env, coreToken, path, method = "GET", body) {
-  if (!/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
+  const mutationPath = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records(?:\/rec_[A-Za-z0-9_-]+)?$/u.test(path)
+    && (method === "POST" && path.endsWith("/records") || ["PATCH", "DELETE"].includes(method) && !path.endsWith("/records"));
+  if (!mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
     return { error: "CORE_PATH_REJECTED" };
   }
   let response;
@@ -215,13 +219,15 @@ async function coreJson(env, coreToken, path, method = "GET", body) {
   if (!response.ok) {
     // An invalid Canonical Query is a caller error, not a Core outage.
     // Never forward Core's raw error body: it may contain private details.
-    if (method === "POST" && path.endsWith("/records/query")
+    if ((path.endsWith("/records/query") || mutationPath)
       && (response.status === 400 || response.status === 422)) {
-      return { error: "INVALID_QUERY_ARGUMENTS" };
+      return { error: mutationPath ? "INVALID_MUTATION_ARGUMENTS" : "INVALID_QUERY_ARGUMENTS" };
     }
+    if (mutationPath && response.status === 409) return { error: "RECORD_VERSION_CONFLICT" };
     return { error: response.status === 401 || response.status === 403
       ? "CORE_PERMISSION_DENIED" : "CORE_UNAVAILABLE" };
   }
+  if (response.status === 204) return { payload: { data: { deleted: true } } };
   let raw;
   try { raw = await response.text(); } catch { return { error: "CORE_UNAVAILABLE" }; }
   if (new TextEncoder().encode(raw).length > MAX_RESULT_BYTES) {
@@ -232,7 +238,7 @@ async function coreJson(env, coreToken, path, method = "GET", body) {
   return { payload };
 }
 
-async function currentToolProjection(env, coreToken, selectedSpace) {
+async function currentToolProjection(env, coreToken, selectedSpace, allowMutations = false) {
   const first = await coreJson(env, coreToken, "/api/v1/me/_discovery/inventory");
   if (first.error) return first;
   const inventory = first.payload?.data;
@@ -287,7 +293,13 @@ async function currentToolProjection(env, coreToken, selectedSpace) {
       !item.spaces.every(space => space.spaceId === selectedSpace))) {
       return { error: "CORE_UNSCOPED_SEMANTICS" };
     }
-    return { projected: projectSelectedModelsToMcp(selection) };
+    const projected = projectSelectedModelsToMcp(selection);
+    if (allowMutations) {
+      const mutations = projectNativeMutations(selection);
+      projected.tools.push(...mutations.tools);
+      Object.assign(projected.bindings, mutations.bindings);
+    }
+    return { projected };
   } catch { return { error: "CORE_DISCOVERY_UNAVAILABLE" }; }
 }
 
@@ -373,7 +385,7 @@ export async function handleIdentityOAuthMcp(request, env) {
     return json({
       resource: config.resource,
       authorization_servers: [config.issuer],
-      scopes_supported: ["resources:read"],
+      scopes_supported: ["resources:read", ...(env.ENVIRONMENT === "staging" ? ["resources:write"] : [])],
       bearer_methods_supported: ["header"],
     }, 200, { "cache-control": "public, max-age=300" });
   }
@@ -435,7 +447,8 @@ export async function handleIdentityOAuthMcp(request, env) {
   const execution = await coreExecution(authorized, request, config, env);
   if (execution.error) return json({ error: execution.error }, 503);
 
-  const current = await currentToolProjection(env, execution.token, authorized.context.spaceId);
+  const current = await currentToolProjection(env, execution.token, authorized.context.spaceId,
+    env.ENVIRONMENT === "staging" && authorized.context.scopes.includes("resources:write"));
   if (current.error) return json({ error: current.error }, 503);
   if (message.method === "tools/list") {
     if (message.params && (typeof message.params !== "object" || Array.isArray(message.params)
@@ -455,7 +468,9 @@ export async function handleIdentityOAuthMcp(request, env) {
   if (!binding) return rpcError(message.id, -32602, "Tool is not in the currently authorized projection");
   let operation;
   try {
-    operation = buildLifeSpaceQueryRequest(binding, message.params.arguments);
+    operation = binding.kind === "native-mutation"
+      ? buildNativeMutation(binding, message.params.arguments)
+      : buildLifeSpaceQueryRequest(binding, message.params.arguments);
   } catch { return rpcError(message.id, -32602, "Invalid arguments for current model semantics"); }
   if (!operation.path.startsWith("/api/v1/spaces/"
     + encodeURIComponent(authorized.context.spaceId) + "/")) {

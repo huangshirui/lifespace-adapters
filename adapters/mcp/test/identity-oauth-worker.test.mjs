@@ -278,7 +278,7 @@ test("host-origin mismatch, CORS origin, query/path confusion and wrong transpor
 });
 
 
-function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"] } = {}) {
+function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test" } = {}) {
   const calls = [];
   let tokenActive = true;
   const signToken = ["eyJ" + "syntheticheader", "syntheticpayload", "syntheticsignature"].join(".");
@@ -314,8 +314,14 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       pagination: { limit: { minimum: 1, maximum: 50, default: 20 }, cursor: { opaque: true } },
     } },
   } };
+  if (mutations) detail.data.mutations = {
+    contractId: "mct_" + "b".repeat(64), modelVersion: 3, schemaHash: schema,
+    operations: { create: { $ref: "#/$defs/Create" }, update: { $ref: "#/$defs/Update" }, delete: { type: "object", properties: { version: { type: "integer" } }, required: ["version"] } },
+    $defs: { Create: { type: "object", properties: { name: { type: "string" } }, required: ["name"], additionalProperties: false },
+      Update: { type: "object", properties: { name: { type: "string" }, version: { type: "integer" } }, required: ["version"], additionalProperties: false } },
+  };
   const env = {
-    ...base,
+    ...base, ENVIRONMENT: environment,
     IDENTITY: { fetch: async (url, init) => {
       const path = new URL(url).pathname;
       calls.push({ service: "IDENTITY", path, init });
@@ -325,7 +331,7 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
         assert.deepEqual(JSON.parse(init.body), { token: TOKEN, resource: RESOURCE });
         return Response.json({ data: {
           tokenType: "Bearer", accessToken: signToken,
-          scope: "resources:read", expiresIn: 60,
+          scope: mutations ? oauthScopes : "resources:read", expiresIn: 60,
           applicationId: invalidExchange ? "app_other" : active.application_id,
           agentId: active.agent_id, spaceId: active.space_id,
         } });
@@ -350,6 +356,10 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
             modelKey, detail: { ...detail.data, key: modelKey },
           })),
         } });
+      }
+      if (mutations && /\/records(?:\/rec_synthetic)?$/u.test(path)) {
+        if (init.method === "DELETE" && mutationStatus === 201) return new Response(null, { status: 204 });
+        return Response.json({ data: { id: "rec_synthetic", version: 1 } }, { status: mutationStatus });
       }
       if (path.endsWith("/records/query")) {
         if (queryThrows) throw new Error("Synthetic private upstream exception");
@@ -601,5 +611,48 @@ test("Core returned a different Space or Identity exchange mismatched Agent cont
     const response = await handleIdentityOAuthMcp(rpc("tools/list"), f.env);
     assert.equal(response.status, 503);
     assert.equal(f.calls.some(x => x.path.endsWith("/records/query")), false);
+  }
+});
+
+
+test("Staging projects and executes only Core contract-backed Native mutations with exact Space/version", async () => {
+  const f = connectedFixture({ mutations: true, environment: "staging", oauthScopes: "resources:read resources:write", advertisedAccess: ["read", "write"] });
+  const tools = (await (await handleIdentityOAuthMcp(rpc("tools/list"), f.env)).json()).result.tools;
+  assert.deepEqual(tools.map(t => t.name).sort(), ["lifespace.create.task", "lifespace.delete.task", "lifespace.query.task", "lifespace.update.task"]);
+  assert.equal(tools.find(t => t.name === "lifespace.create.task").inputSchema.properties.data.$ref, "#/$defs/Create");
+  for (const [op, args] of [
+    ["create", { spaceId: "spc_synthetic", data: { name: "Synthetic only" } }],
+    ["update", { spaceId: "spc_synthetic", recordId: "rec_synthetic", data: { version: 1, name: "Changed" } }],
+    ["delete", { spaceId: "spc_synthetic", recordId: "rec_synthetic", data: { version: 1 } }],
+  ]) {
+    const response = await handleIdentityOAuthMcp(rpc("tools/call", { params: { name: "lifespace." + op + ".task", arguments: args } }), f.env);
+    const result = (await response.json()).result;
+    assert.equal(result.isError, undefined);
+    if (op === "delete") assert.equal(JSON.parse(result.content[0].text).deleted, true);
+  }
+  assert.deepEqual(f.calls.filter(c => /\/records(?:\/rec_synthetic)?$/u.test(c.path)).map(c => c.init.method), ["POST", "PATCH", "DELETE"]);
+  for (const args of [
+    { spaceId: "spc_other", data: { name: "No" } },
+    { spaceId: "spc_synthetic", data: {}, principalUserId: "usr_other" },
+  ]) {
+    const denied = await handleIdentityOAuthMcp(rpc("tools/call", { params: { name: "lifespace.create.task", arguments: args } }), f.env);
+    assert.equal((await denied.json()).error.code, -32602);
+  }
+  const badVersion = await handleIdentityOAuthMcp(rpc("tools/call", { params: { name: "lifespace.delete.task", arguments: { spaceId: "spc_synthetic", recordId: "rec_synthetic", data: {} } } }), f.env);
+  assert.equal((await badVersion.json()).error.code, -32602);
+  f.revokeOAuth();
+  assert.equal((await handleIdentityOAuthMcp(rpc("tools/call", { params: { name: "lifespace.create.task", arguments: { spaceId: "spc_synthetic", data: { name: "No" } } } }), f.env)).status, 401);
+});
+
+test("Production/read-only consent/ungranted contexts do not project mutation tools; Core conflicts are sanitized", async () => {
+  for (const patch of [{ environment: "production" }, { oauthScopes: "resources:read" }, { advertisedAccess: ["read"] }]) {
+    const f = connectedFixture({ mutations: true, environment: "staging", oauthScopes: "resources:read resources:write", advertisedAccess: ["read", "write"], ...patch });
+    const r = await handleIdentityOAuthMcp(rpc("tools/list"), f.env);
+    assert.deepEqual((await r.json()).result.tools.map(t => t.name), ["lifespace.query.task"]);
+  }
+  for (const [status, code] of [[400, "INVALID_MUTATION_ARGUMENTS"], [403, "CORE_PERMISSION_DENIED"], [409, "RECORD_VERSION_CONFLICT"]]) {
+    const f = connectedFixture({ mutations: true, environment: "staging", oauthScopes: "resources:read resources:write", advertisedAccess: ["read", "write"], mutationStatus: status });
+    const r = await handleIdentityOAuthMcp(rpc("tools/call", { params: { name: "lifespace.create.task", arguments: { spaceId: "spc_synthetic", data: { name: "Synthetic only" } } } }), f.env);
+    assert.equal((await r.json()).result.content[0].text, code);
   }
 });
