@@ -101,3 +101,10 @@ For a complete **real Staging** OAuth test without manually exporting any token,
 5. The temporary DCR Client registration remains in Staging after testing; review/disable it later through the normal Console client governance. OAuth Authorization is revoked; your existing ChatGPT connection and its tokens are untouched. No D1 mutation, production endpoint, user-record write or elevated User Delegation is used.
 
 If DCR is not enabled, the script **stops before registration**. If Consent is denied or expires, no OAuth token is issued; the pending request expires. A local browser is required; this is not a noninteractive GitHub Actions job. The test confirms read-only OAuth consent and revocation, **not** functioning MCP record mutation (LifeSpace #493).
+
+## Staging Native write candidate / Staging 原生写入候选
+
+Development-only Agent Direct CRUD is gated by Staging + explicit read/write
+OAuth consent + Core's exact current model contract and authority preview.
+Production remains read-only; User Delegation is not implicitly enabled.
+Contract, argument and deployment details: [MCP adapter](../../docs/mcp-adapter.md).
