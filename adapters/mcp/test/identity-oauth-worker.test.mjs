@@ -150,22 +150,27 @@ test("MCP 401 advertises protected-resource metadata before making any Identity/
   assert.equal(f.calls.length, 0);
 });
 
-test("Staging initial OAuth challenge requests read+write, while Production keeps read-only", async () => {
-  for (const [environment, expected] of [
-    ["staging", "resources:read resources:write"],
-    ["production", "resources:read"],
+test("Core MCP Server scope ceiling drives metadata and OAuth challenge across environments", async () => {
+  for (const [environment, hint, expected] of [
+    ["staging", null, "resources:read"],
+    ["production", "resources:read", "resources:read"],
+    ["staging", "resources:read resources:write", "resources:read resources:write"],
+    ["production", "resources:read resources:write", "resources:read resources:write"],
+    ["production", "resources:manage", "resources:read"],
   ]) {
     const f = fixture();
     f.env.ENVIRONMENT = environment;
+    const scopeHeader = hint ? { "x-lifespace-mcp-scope-ceiling": hint } : {};
     const metadata = await handleIdentityOAuthMcp(
-      new Request("https://resource.example.com/.well-known/oauth-protected-resource"), f.env,
+      new Request("https://resource.example.com/.well-known/oauth-protected-resource", {
+        headers: scopeHeader,
+      }), f.env,
     );
     assert.equal(metadata.status, 200);
     assert.deepEqual((await metadata.json()).scopes_supported, expected.split(" "));
 
-    // A new ChatGPT MCP connection discovers OAuth through this first challenge.
     const result = await handleIdentityOAuthMcp(rpc("initialize", {
-      headers: { authorization: "" },
+      headers: { authorization: "", ...scopeHeader },
     }), f.env);
     assert.equal(result.status, 401);
     assert.match(result.headers.get("www-authenticate") || "",
