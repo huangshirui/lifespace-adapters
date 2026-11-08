@@ -18,12 +18,16 @@ export function checkStagingPkceTarget(input) {
   const issuer = stageOrigin(input.issuer);
   if (!MCP_PATH.test(resource.pathname) || resource.href !== input.resource
     || issuer.pathname !== "/" || issuer.origin !== input.issuer
-    || resource.origin === issuer.origin) fail("exact Staging MCP resource and separate issuer origin required");
+    || resource.origin === issuer.origin
+    || resource.hostname.split(".").slice(-2).join(".")
+      !== issuer.hostname.split(".").slice(-2).join(".")) {
+    fail("exact same-domain Staging MCP resource and separate issuer origin required");
+  }
   return { resource: resource.href, issuer: issuer.origin,
     metadataUrl: resource.origin + "/.well-known/oauth-protected-resource" + resource.pathname };
 }
 async function safeFetch(fetchImpl, url, init) {
-  try { return await fetchImpl(url, { ...init, signal: AbortSignal.timeout(12000) }); }
+  try { return await fetchImpl(url, { ...init, redirect: "manual", signal: AbortSignal.timeout(12000) }); }
   catch { fail("network request unavailable"); }
 }
 async function jsonResponse(response, requiredStatus, label) {
@@ -128,12 +132,6 @@ export async function runStagingPkceRevocation(input, {
     });
     // Avoid a pending unhandled rejection if the operator closes the script.
     codePromise.catch(() => undefined);
-    timer = setTimeout(() => {
-      // Repointing to a rejected Promise is safe because a handler was attached.
-      handleCallback = (_request, response) => {
-        response.writeHead(410, { "cache-control": "no-store" }); response.end();
-      };
-    }, timeoutMs);
     const authUrl = new URL(as.authorization_endpoint);
     for (const [key, value] of Object.entries({
       response_type: "code", client_id: clientId, redirect_uri: callback,
