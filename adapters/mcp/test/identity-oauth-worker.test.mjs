@@ -424,6 +424,9 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
           return Response.json({data:{items:[{title:"Synthetic only"}]}});
         }
         if (op === "get") return Response.json({data:{id:"rec_synthetic",version:1}});
+        const payload=requested.arguments?.data;
+        if (["update","delete"].includes(op)&&(!Number.isSafeInteger(payload?.version)||payload.version<1))
+          return Response.json({error:"Missing current version"},{status:422});
         if (mutationStatus !== 201) return Response.json({error:"synthetic write failure"},{status:mutationStatus});
         if (op === "delete") return new Response(null,{status:204});
         return Response.json({data:{id:"rec_synthetic",version:1}},{status:op==="create"?201:200});
@@ -734,7 +737,8 @@ test("Staging projects and executes only Core contract-backed Native mutations w
     assert.equal((await denied.json()).error.code, -32602);
   }
   const badVersion = await handleIdentityOAuthMcp(rpc("tools/call", { params: { name: "lifespace.delete.task", arguments: { spaceId: "spc_synthetic", recordId: "rec_synthetic", data: {} } } }), f.env);
-  assert.equal((await badVersion.json()).error.code, -32602);
+  assert.deepEqual((await badVersion.json()).result.content, [
+    {type:"text",text:"INVALID_OPERATION_ARGUMENTS"}]);
   f.revokeOAuth();
   assert.equal((await handleIdentityOAuthMcp(rpc("tools/call", { params: { name: "lifespace.create.task", arguments: { spaceId: "spc_synthetic", data: { name: "No" } } } }), f.env)).status, 401);
 });
@@ -820,7 +824,7 @@ test("Production and Staging share consented write semantics; read-only/ungrante
   assert.deepEqual((await listed.json()).result.tools.map(t => t.name), [
     "lifespace.create.task", "lifespace.delete.task", "lifespace.query.task", "lifespace.update.task",
   ]);
-  for (const [status, code] of [[400, "INVALID_MUTATION_ARGUMENTS"], [403, "CORE_PERMISSION_DENIED"], [409, "RECORD_VERSION_CONFLICT"]]) {
+  for (const [status, code] of [[400, "INVALID_OPERATION_ARGUMENTS"], [403, "CORE_PERMISSION_DENIED"], [409, "RECORD_VERSION_CONFLICT"]]) {
     const f = connectedFixture({ mutations: true, environment: "staging", oauthScopes: "resources:read resources:write", advertisedAccess: ["read", "write"], mutationStatus: status });
     const r = await handleIdentityOAuthMcp(rpc("tools/call", { params: { name: "lifespace.create.task", arguments: { spaceId: "spc_synthetic", data: { name: "Synthetic only" } } } }), f.env);
     assert.equal((await r.json()).result.content[0].text, code);
