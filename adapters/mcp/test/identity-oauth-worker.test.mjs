@@ -150,6 +150,30 @@ test("MCP 401 advertises protected-resource metadata before making any Identity/
   assert.equal(f.calls.length, 0);
 });
 
+test("Staging initial OAuth challenge requests read+write, while Production keeps read-only", async () => {
+  for (const [environment, expected] of [
+    ["staging", "resources:read resources:write"],
+    ["production", "resources:read"],
+  ]) {
+    const f = fixture();
+    f.env.ENVIRONMENT = environment;
+    const metadata = await handleIdentityOAuthMcp(
+      new Request("https://resource.example.com/.well-known/oauth-protected-resource"), f.env,
+    );
+    assert.equal(metadata.status, 200);
+    assert.deepEqual((await metadata.json()).scopes_supported, expected.split(" "));
+
+    // A new ChatGPT MCP connection discovers OAuth through this first challenge.
+    const result = await handleIdentityOAuthMcp(rpc("initialize", {
+      headers: { authorization: "" },
+    }), f.env);
+    assert.equal(result.status, 401);
+    assert.match(result.headers.get("www-authenticate") || "",
+      new RegExp('scope="' + expected + '"', "u"));
+    assert.equal(f.calls.length, 0);
+  }
+});
+
 test("opaque token is introspected privately for its exact resource; never forwarded to Core", async () => {
   const f = fixture();
   const result = await handleIdentityOAuthMcp(rpc("initialize"), f.env);

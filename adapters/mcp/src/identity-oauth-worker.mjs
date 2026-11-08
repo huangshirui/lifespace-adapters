@@ -69,20 +69,25 @@ export function oauthResourceConfig(env, requestUrl) {
     metadata: resourceUrl.origin + META_PATH + resourceUrl.pathname };
 }
 
-function challenge(config, extra = "") {
+function challenge(config, env, extra = "") {
+  // The initial OAuth challenge drives client scope selection. In Staging,
+  // request explicit write consent for real CRUD acceptance; Production stays
+  // read-only. Supported scopes alone do not make clients request write.
+  const scope = env?.ENVIRONMENT === "staging"
+    ? "resources:read resources:write" : "resources:read";
   return "Bearer resource_metadata=\"" + config.metadata
-    + "\", scope=\"resources:read\"" + extra;
+    + "\", scope=\"" + scope + "\"" + extra;
 }
 
-function authFailure(config, error = "invalid_token") {
+function authFailure(config, env, error = "invalid_token") {
   return json({ error: "OAuth authorization required" }, 401, {
-    "www-authenticate": challenge(config, ", error=\"" + error + "\""),
+    "www-authenticate": challenge(config, env, ", error=\"" + error + "\""),
   });
 }
 
-function insufficientScope(config) {
+function insufficientScope(config, env) {
   return json({ error: "insufficient_scope" }, 403, {
-    "www-authenticate": challenge(config, ", error=\"insufficient_scope\""),
+    "www-authenticate": challenge(config, env, ", error=\"insufficient_scope\""),
   });
 }
 
@@ -395,8 +400,8 @@ export async function handleIdentityOAuthMcp(request, env) {
 
   const authorized = await verifyOAuthToken(request, config, env);
   if (authorized.error === "resource_unavailable") return json({ error: "Resource authentication unavailable" }, 503);
-  if (authorized.error === "insufficient_scope") return insufficientScope(config);
-  if (authorized.error) return authFailure(config);
+  if (authorized.error === "insufficient_scope") return insufficientScope(config, env);
+  if (authorized.error) return authFailure(config, env);
 
   if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
     return json({ error: "Expected application/json" }, 415);
