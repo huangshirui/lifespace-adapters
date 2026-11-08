@@ -237,11 +237,12 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
   if (!response.ok) {
     // An invalid Canonical Query is a caller error, not a Core outage.
     // Never forward Core's raw error body: it may contain private details.
-    if ((path.endsWith("/records/query") || mutationPath)
+    if ((genericCommand || path.endsWith("/records/query") || mutationPath)
       && (response.status === 400 || response.status === 422)) {
-      return { error: mutationPath ? "INVALID_MUTATION_ARGUMENTS" : "INVALID_QUERY_ARGUMENTS" };
+      return { error: genericCommand ? "INVALID_OPERATION_ARGUMENTS"
+        : mutationPath ? "INVALID_MUTATION_ARGUMENTS" : "INVALID_QUERY_ARGUMENTS" };
     }
-    if (mutationPath && response.status === 409) return { error: "RECORD_VERSION_CONFLICT" };
+    if ((genericCommand || mutationPath) && response.status === 409) return { error: "RECORD_VERSION_CONFLICT" };
     return { error: response.status === 401 || response.status === 403
       ? "CORE_PERMISSION_DENIED" : "CORE_UNAVAILABLE" };
   }
