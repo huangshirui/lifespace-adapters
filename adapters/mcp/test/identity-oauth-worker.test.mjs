@@ -307,7 +307,7 @@ test("host-origin mismatch, CORS origin, query/path confusion and wrong transpor
 });
 
 
-function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test" } = {}) {
+function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null } = {}) {
   const calls = [];
   let tokenActive = true;
   const signToken = ["eyJ" + "syntheticheader", "syntheticpayload", "syntheticsignature"].join(".");
@@ -343,6 +343,7 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       pagination: { limit: { minimum: 1, maximum: 50, default: 20 }, cursor: { opaque: true } },
     } },
   } };
+  if (Array.isArray(mcpOperations)) detail.data.mcpOperations = mcpOperations;
   if (mutations) detail.data.mutations = {
     contractId: "mct_" + "b".repeat(64), modelVersion: 3, schemaHash: schema,
     operations: { create: { $ref: "#/$defs/Create" }, update: { $ref: "#/$defs/Update" }, delete: { type: "object", properties: { version: { type: "integer" } }, required: ["version"] } },
@@ -385,6 +386,10 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
             modelKey, detail: { ...detail.data, key: modelKey },
           })),
         } });
+      }
+      if (mcpOperations?.includes("get") && init.method === "GET"
+        && path === "/api/v1/spaces/spc_synthetic/models/task/records/rec_synthetic") {
+        return Response.json({ data: { id: "rec_synthetic", version: 1 } });
       }
       if (mutations && /\/records(?:\/rec_synthetic)?$/u.test(path)) {
         if (init.method === "DELETE" && mutationStatus === 201) return new Response(null, { status: 204 });
@@ -671,6 +676,25 @@ test("Staging projects and executes only Core contract-backed Native mutations w
   assert.equal((await badVersion.json()).error.code, -32602);
   f.revokeOAuth();
   assert.equal((await handleIdentityOAuthMcp(rpc("tools/call", { params: { name: "lifespace.create.task", arguments: { spaceId: "spc_synthetic", data: { name: "No" } } } }), f.env)).status, 401);
+});
+
+test("Get-only Server lists only Native Get and executes exact record read", async () => {
+  const f = connectedFixture({ mcpOperations: ["get"] });
+  const listed = await handleIdentityOAuthMcp(rpc("tools/list"), f.env);
+  assert.equal(listed.status, 200);
+  assert.deepEqual((await listed.json()).result.tools.map(t => t.name), ["lifespace.get.task"]);
+  const fetched = await handleIdentityOAuthMcp(rpc("tools/call", {
+    params: { name: "lifespace.get.task",
+      arguments: { spaceId: "spc_synthetic", recordId: "rec_synthetic" } },
+  }), f.env);
+  assert.deepEqual(JSON.parse((await fetched.json()).result.content[0].text),
+    { id: "rec_synthetic", version: 1 });
+  assert.ok(f.calls.some(c => c.service === "CORE"
+    && c.path.endsWith("/models/task/records/rec_synthetic") && c.init.method === "GET"));
+  const forbidden = await handleIdentityOAuthMcp(rpc("tools/call", {
+    params: { name: "lifespace.query.task", arguments: { spaceId: "spc_synthetic" } },
+  }), f.env);
+  assert.equal((await forbidden.json()).error.code, -32602);
 });
 
 test("Production and Staging share consented write semantics; read-only/ungranted contexts stay read-only", async () => {
