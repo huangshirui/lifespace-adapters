@@ -147,9 +147,9 @@ and optimistic concurrency, in **every environment**.
 This enables the same code to be production-ready without deploying any
 public Production OAuth MCP service binding or silently broadening the
 existing read-only authorizations. Production provisioning and live E2E need
-separate owner-reviewed release gates. Currently implemented Native MCP
-operations are Query and Create/Update/Delete; `get`, Actions, Person
-Directory and External Model tool coverage still require separate implementation
+separate owner-reviewed release gates. Current draft now implements Native Query, Get and Create/Update/Delete with
+exact Core per-Server operation gating; Actions, Person Directory and External
+Model tool coverage still require separate implementation
 before the full configured Server surface is considered production complete.
 User Delegation remains an independent, explicitly consented `arq_*` →
 `dlg_*` flow and is not provided by broad OAuth Scope.
