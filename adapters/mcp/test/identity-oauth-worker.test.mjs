@@ -673,12 +673,17 @@ test("Staging projects and executes only Core contract-backed Native mutations w
   assert.equal((await handleIdentityOAuthMcp(rpc("tools/call", { params: { name: "lifespace.create.task", arguments: { spaceId: "spc_synthetic", data: { name: "No" } } } }), f.env)).status, 401);
 });
 
-test("Production/read-only consent/ungranted contexts do not project mutation tools; Core conflicts are sanitized", async () => {
-  for (const patch of [{ environment: "production" }, { oauthScopes: "resources:read" }, { advertisedAccess: ["read"] }]) {
-    const f = connectedFixture({ mutations: true, environment: "staging", oauthScopes: "resources:read resources:write", advertisedAccess: ["read", "write"], ...patch });
+test("Production and Staging share consented write semantics; read-only/ungranted contexts stay read-only", async () => {
+  for (const patch of [{ oauthScopes: "resources:read" }, { advertisedAccess: ["read"] }]) {
+    const f = connectedFixture({ mutations: true, environment: "production", oauthScopes: "resources:read resources:write", advertisedAccess: ["read", "write"], ...patch });
     const r = await handleIdentityOAuthMcp(rpc("tools/list"), f.env);
     assert.deepEqual((await r.json()).result.tools.map(t => t.name), ["lifespace.query.task"]);
   }
+  const production = connectedFixture({ mutations: true, environment: "production", oauthScopes: "resources:read resources:write", advertisedAccess: ["read", "write"] });
+  const listed = await handleIdentityOAuthMcp(rpc("tools/list"), production.env);
+  assert.deepEqual((await listed.json()).result.tools.map(t => t.name), [
+    "lifespace.query.task", "lifespace.create.task", "lifespace.update.task", "lifespace.delete.task",
+  ]);
   for (const [status, code] of [[400, "INVALID_MUTATION_ARGUMENTS"], [403, "CORE_PERMISSION_DENIED"], [409, "RECORD_VERSION_CONFLICT"]]) {
     const f = connectedFixture({ mutations: true, environment: "staging", oauthScopes: "resources:read resources:write", advertisedAccess: ["read", "write"], mutationStatus: status });
     const r = await handleIdentityOAuthMcp(rpc("tools/call", { params: { name: "lifespace.create.task", arguments: { spaceId: "spc_synthetic", data: { name: "Synthetic only" } } } }), f.env);
