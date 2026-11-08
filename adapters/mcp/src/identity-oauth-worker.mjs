@@ -1,4 +1,5 @@
 import { projectNativeMutations, buildNativeMutation } from "./mutation-projection.mjs";
+import { projectNativeGets, buildNativeGet } from "./get-projection.mjs";
 import { loadSelectedModelSemantics } from "./progressive-discovery.mjs";
 import { buildLifeSpaceQueryRequest, projectSelectedModelsToMcp } from "./projection.mjs";
 
@@ -210,9 +211,10 @@ async function coreExecution(authorized, request, config, env) {
 }
 
 async function coreJson(env, coreToken, path, method = "GET", body) {
+  const recordGet = method === "GET" && /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records\/rec_[A-Za-z0-9_-]+$/u.test(path);
   const mutationPath = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records(?:\/rec_[A-Za-z0-9_-]+)?$/u.test(path)
     && (method === "POST" && path.endsWith("/records") || ["PATCH", "DELETE"].includes(method) && !path.endsWith("/records"));
-  if (!mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
+  if (!recordGet && !mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
     return { error: "CORE_PATH_REJECTED" };
   }
   let response;
@@ -303,7 +305,14 @@ async function currentToolProjection(env, coreToken, selectedSpace, allowMutatio
       !item.spaces.every(space => space.spaceId === selectedSpace))) {
       return { error: "CORE_UNSCOPED_SEMANTICS" };
     }
-    const projected = projectSelectedModelsToMcp(selection);
+    const projected = projectSelectedModelsToMcp({
+      ...selection,
+      models: selection.models.filter(item => !Array.isArray(item.detail.mcpOperations)
+        || item.detail.mcpOperations.includes("query")),
+    });
+    const gets = projectNativeGets(selection);
+    projected.tools.push(...gets.tools);
+    Object.assign(projected.bindings, gets.bindings);
     if (allowMutations) {
       const mutations = projectNativeMutations(selection);
       projected.tools.push(...mutations.tools);
@@ -480,7 +489,9 @@ export async function handleIdentityOAuthMcp(request, env) {
   try {
     operation = binding.kind === "native-mutation"
       ? buildNativeMutation(binding, message.params.arguments)
-      : buildLifeSpaceQueryRequest(binding, message.params.arguments);
+      : binding.kind === "native-get"
+        ? buildNativeGet(binding, message.params.arguments)
+        : buildLifeSpaceQueryRequest(binding, message.params.arguments);
   } catch { return rpcError(message.id, -32602, "Invalid arguments for current model semantics"); }
   if (!operation.path.startsWith("/api/v1/spaces/"
     + encodeURIComponent(authorized.context.spaceId) + "/")) {
