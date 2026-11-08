@@ -125,3 +125,30 @@ repository contains only synthetic hostnames and no live infrastructure secrets.
 ## Modern MCP and legacy compatibility
 
 The MCP Resource transport supports both `2026-07-28` stateless per-request metadata and `2025-11-25` legacy handshake. Modern `server/discover`, `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name` validation, HeaderMismatch and UnsupportedProtocolVersion errors are tested using synthetic requests. Neither protocol version changes LifeSpace Principal/Actor/Delegation: current read-only Agent Direct authority continues to be verified by Core. Protocol interoperability in live ChatGPT/Claude clients and Identity client registration are still pending Staging acceptance. 
+
+## Staging Native write candidate / Staging 原生模型写入候选
+
+This development slice adds `lifespace.create.<model>`, `lifespace.update.<model>`
+and `lifespace.delete.<model>` **only when** `ENVIRONMENT=staging`, OAuth consent
+contains both read and write, Core advertises current read/write access, and Core
+returns `detail.mutations` with exact `mct_*`/Model version/hash evidence. Existing
+read-only clients and Production keep Query only. Core must be deployed with the
+new bounded Native write bridge first; then deploy this reviewed Adapter through
+the existing owner-only Staging release workflow. No runtime is deployed by CI.
+
+Tool arguments are `spaceId`, `data` (canonical Create/Update/Delete JSON Schema),
+and `recordId` for update/delete. `data.version` is mandatory for update/delete;
+Core remains the sole semantic validator and enforces Policy, current Grants,
+current OAuth scope, exact selected Space/Server operation, version and audit.
+The Adapter copies a closed local `$defs` subset from Core's immutable contract,
+never handwrites domain fields, infers authority or accepts identity overrides.
+Schema/version/hash mismatch and unresolved refs fail closed. On each tool call,
+Core projection is reloaded so cached tools cannot retain revoked authority.
+
+Core 400/422 becomes `INVALID_MUTATION_ARGUMENTS`, 409 becomes
+`RECORD_VERSION_CONFLICT`, 401/403 becomes `CORE_PERMISSION_DENIED`; raw Core
+error details are not forwarded. Successful Delete 204 yields `{deleted:true}`.
+No External write, batch mutation, Action, admin surface or implicit User Delegation
+is added. `allow_user_authorization` is eligibility, **not** delegated authority.
+Real Staging CRUD/rollback/revocation acceptance must follow deployment; local tests
+alone do not establish that the live write chain is available.
