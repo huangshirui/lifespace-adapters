@@ -150,22 +150,27 @@ test("MCP 401 advertises protected-resource metadata before making any Identity/
   assert.equal(f.calls.length, 0);
 });
 
-test("Staging initial OAuth challenge requests read+write, while Production keeps read-only", async () => {
-  for (const [environment, expected] of [
-    ["staging", "resources:read resources:write"],
-    ["production", "resources:read"],
+test("Core MCP Server scope ceiling drives metadata and OAuth challenge across environments", async () => {
+  for (const [environment, hint, expected] of [
+    ["staging", null, "resources:read"],
+    ["production", "resources:read", "resources:read"],
+    ["staging", "resources:read resources:write", "resources:read resources:write"],
+    ["production", "resources:read resources:write", "resources:read resources:write"],
+    ["production", "resources:manage", "resources:read"],
   ]) {
     const f = fixture();
     f.env.ENVIRONMENT = environment;
+    const scopeHeader = hint ? { "x-lifespace-mcp-scope-ceiling": hint } : {};
     const metadata = await handleIdentityOAuthMcp(
-      new Request("https://resource.example.com/.well-known/oauth-protected-resource"), f.env,
+      new Request("https://resource.example.com/.well-known/oauth-protected-resource", {
+        headers: scopeHeader,
+      }), f.env,
     );
     assert.equal(metadata.status, 200);
     assert.deepEqual((await metadata.json()).scopes_supported, expected.split(" "));
 
-    // A new ChatGPT MCP connection discovers OAuth through this first challenge.
     const result = await handleIdentityOAuthMcp(rpc("initialize", {
-      headers: { authorization: "" },
+      headers: { authorization: "", ...scopeHeader },
     }), f.env);
     assert.equal(result.status, 401);
     assert.match(result.headers.get("www-authenticate") || "",
@@ -302,7 +307,7 @@ test("host-origin mismatch, CORS origin, query/path confusion and wrong transpor
 });
 
 
-function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test" } = {}) {
+function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false } = {}) {
   const calls = [];
   let tokenActive = true;
   const signToken = ["eyJ" + "syntheticheader", "syntheticpayload", "syntheticsignature"].join(".");
@@ -338,6 +343,7 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       pagination: { limit: { minimum: 1, maximum: 50, default: 20 }, cursor: { opaque: true } },
     } },
   } };
+  if (Array.isArray(mcpOperations)) detail.data.mcpOperations = mcpOperations;
   if (mutations) detail.data.mutations = {
     contractId: "mct_" + "b".repeat(64), modelVersion: 3, schemaHash: schema,
     operations: { create: { $ref: "#/$defs/Create" }, update: { $ref: "#/$defs/Update" }, delete: { type: "object", properties: { version: { type: "integer" } }, required: ["version"] } },
@@ -349,10 +355,10 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
     IDENTITY: { fetch: async (url, init) => {
       const path = new URL(url).pathname;
       calls.push({ service: "IDENTITY", path, init });
-      if (path === "/oauth/introspect") return Response.json(tokenActive ? { ...active, scope: oauthScopes } : { active: false });
+      if (path === "/oauth/introspect") return Response.json(tokenActive ? { ...active, scope: oauthScopes, allow_user_authorization: mayDelegate } : { active: false });
       if (path === "/oauth/execution-tokens") {
         assert.equal(init.headers["x-lifespace-resource-secret"], SECRET);
-        assert.deepEqual(JSON.parse(init.body), { token: TOKEN, resource: RESOURCE });
+        assert.deepEqual(JSON.parse(init.body), { token: TOKEN, resource: RESOURCE, ...((JSON.parse(init.body)).delegationId ? {delegationId:"dlg_synthetic"} : {}) });
         return Response.json({ data: {
           tokenType: "Bearer", accessToken: signToken,
           scope: mutations ? oauthScopes : "resources:read", expiresIn: 60,
@@ -368,6 +374,14 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       assert.equal(init.headers.authorization, "Bearer " + signToken);
       assert.ok(!JSON.stringify(init.headers).includes(TOKEN));
       if (denied && path.endsWith("/records/query")) return Response.json({ error: "forbidden" }, { status: 403 });
+      if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/oauth-delegation-requests" && init.method === "POST") {
+        const v = JSON.parse(init.body);
+        assert.deepEqual(v, {modelKey:"task",operation:"create",reason:"Please create one task"});
+        return Response.json({data:{id:"arq_"+ "f".repeat(32),status:"pending",approvalUrl:"https://account.example.test/delegation?request_id=arq_"+ "f".repeat(32)}});
+      }
+      if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/oauth-delegation-requests/arq_"+"f".repeat(32)) {
+        return Response.json({data:{id:"arq_"+"f".repeat(32),status:"approved",delegationId:"dlg_synthetic"}});
+      }
       if (path === "/api/v1/me/_discovery/inventory") {
         if (discoveryStatus !== 200) return Response.json({ error: "synthetic upstream details" }, { status: discoveryStatus });
         return Response.json(inventory);
@@ -380,6 +394,14 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
             modelKey, detail: { ...detail.data, key: modelKey },
           })),
         } });
+      }
+      if (mcpOperations?.includes("get") && init.method === "GET"
+        && path === "/api/v1/spaces/spc_synthetic/models/task/records/rec_synthetic") {
+        return Response.json({ data: { id: "rec_synthetic", version: 1 } });
+      }
+      if (mayDelegate && init.method === "POST" && path === "/api/v1/spaces/spc_synthetic/models/task/records") {
+        assert.equal(init.headers["x-lifespace-delegation-id"], "dlg_synthetic");
+        return Response.json({data:{id:"rec_synthetic",version:1}});
       }
       if (mutations && /\/records(?:\/rec_synthetic)?$/u.test(path)) {
         if (init.method === "DELETE" && mutationStatus === 201) return new Response(null, { status: 204 });
@@ -668,12 +690,86 @@ test("Staging projects and executes only Core contract-backed Native mutations w
   assert.equal((await handleIdentityOAuthMcp(rpc("tools/call", { params: { name: "lifespace.create.task", arguments: { spaceId: "spc_synthetic", data: { name: "No" } } } }), f.env)).status, 401);
 });
 
-test("Production/read-only consent/ungranted contexts do not project mutation tools; Core conflicts are sanitized", async () => {
-  for (const patch of [{ environment: "production" }, { oauthScopes: "resources:read" }, { advertisedAccess: ["read"] }]) {
-    const f = connectedFixture({ mutations: true, environment: "staging", oauthScopes: "resources:read resources:write", advertisedAccess: ["read", "write"], ...patch });
+test("Get-only Server lists only Native Get and executes exact record read", async () => {
+  const f = connectedFixture({ mcpOperations: ["get"] });
+  const listed = await handleIdentityOAuthMcp(rpc("tools/list"), f.env);
+  assert.equal(listed.status, 200);
+  assert.deepEqual((await listed.json()).result.tools.map(t => t.name), ["lifespace.get.task"]);
+  const fetched = await handleIdentityOAuthMcp(rpc("tools/call", {
+    params: { name: "lifespace.get.task",
+      arguments: { spaceId: "spc_synthetic", recordId: "rec_synthetic" } },
+  }), f.env);
+  assert.deepEqual(JSON.parse((await fetched.json()).result.content[0].text),
+    { id: "rec_synthetic", version: 1 });
+  assert.ok(f.calls.some(c => c.service === "CORE"
+    && c.path.endsWith("/models/task/records/rec_synthetic") && c.init.method === "GET"));
+  const forbidden = await handleIdentityOAuthMcp(rpc("tools/call", {
+    params: { name: "lifespace.query.task", arguments: { spaceId: "spc_synthetic" } },
+  }), f.env);
+  assert.equal((await forbidden.json()).error.code, -32602);
+});
+
+test("third-party OAuth may request LifeSpace Account URL, status and explicit represented execution", async () => {
+  const f=connectedFixture({mayDelegate:true, oauthScopes:"resources:read resources:write"});
+  const listed=await handleIdentityOAuthMcp(rpc("tools/list"),f.env);
+  assert.equal(listed.status,200);
+  const names=(await listed.json()).result.tools.map(x=>x.name);
+  assert.ok(names.includes("lifespace.request_user_delegation"));
+  assert.ok(names.includes("lifespace.user_delegation_status"));
+  assert.ok(names.includes("lifespace.execute_user_delegation"));
+  const request=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.request_user_delegation",arguments:{
+      modelKey:"task",operation:"create",reason:"Please create one task",
+    },
+  }}),f.env);
+  const result=JSON.parse((await request.json()).result.content[0].text);
+  assert.match(result.approvalUrl,/^https:\/\/account\.example\.test\/delegation\?request_id=arq_/u);
+  const status=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.user_delegation_status",arguments:{requestId:"arq_"+"f".repeat(32)},
+  }}),f.env);
+  assert.equal(JSON.parse((await status.json()).result.content[0].text).status,"approved");
+  const invoked=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.execute_user_delegation",arguments:{
+      delegationId:"dlg_synthetic",modelKey:"task",operation:"create",data:{name:"Synthetic only"},
+    },
+  }}),f.env);
+  assert.deepEqual(JSON.parse((await invoked.json()).result.content[0].text),{id:"rec_synthetic",version:1});
+  const executeCalls=f.calls.filter(x=>x.path==="/oauth/execution-tokens");
+  assert.ok(executeCalls.some(x=>JSON.parse(x.init.body).delegationId==="dlg_synthetic"));
+  assert.ok(f.calls.some(x=>x.service==="CORE" && x.init.headers["x-lifespace-delegation-id"]==="dlg_synthetic"));
+});
+
+test("third-party OAuth Delegation unavailable when opt-in disabled or write Scope absent", async () => {
+  const disabled=connectedFixture({mayDelegate:false,oauthScopes:"resources:read resources:write"});
+  const list=await handleIdentityOAuthMcp(rpc("tools/list"),disabled.env);
+  assert.ok(!(await list.json()).result.tools.some(x=>x.name==="lifespace.request_user_delegation"));
+  const fake=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.request_user_delegation",arguments:{
+      modelKey:"task",operation:"create",reason:"Please create one task",
+    },
+  }}),disabled.env);
+  assert.equal((await fake.json()).error.code,-32602);
+  const readOnly=connectedFixture({mayDelegate:true,oauthScopes:"resources:read"});
+  const blocked=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.request_user_delegation",arguments:{
+      modelKey:"task",operation:"create",reason:"Please create one task",
+    },
+  }}),readOnly.env);
+  assert.equal((await blocked.json()).error.code,-32602);
+  assert.equal(readOnly.calls.some(x=>x.path.endsWith("/oauth-delegation-requests")),false);
+});
+
+test("Production and Staging share consented write semantics; read-only/ungranted contexts stay read-only", async () => {
+  for (const patch of [{ oauthScopes: "resources:read" }, { advertisedAccess: ["read"] }]) {
+    const f = connectedFixture({ mutations: true, environment: "production", oauthScopes: "resources:read resources:write", advertisedAccess: ["read", "write"], ...patch });
     const r = await handleIdentityOAuthMcp(rpc("tools/list"), f.env);
     assert.deepEqual((await r.json()).result.tools.map(t => t.name), ["lifespace.query.task"]);
   }
+  const production = connectedFixture({ mutations: true, environment: "production", oauthScopes: "resources:read resources:write", advertisedAccess: ["read", "write"] });
+  const listed = await handleIdentityOAuthMcp(rpc("tools/list"), production.env);
+  assert.deepEqual((await listed.json()).result.tools.map(t => t.name), [
+    "lifespace.query.task", "lifespace.create.task", "lifespace.update.task", "lifespace.delete.task",
+  ]);
   for (const [status, code] of [[400, "INVALID_MUTATION_ARGUMENTS"], [403, "CORE_PERMISSION_DENIED"], [409, "RECORD_VERSION_CONFLICT"]]) {
     const f = connectedFixture({ mutations: true, environment: "staging", oauthScopes: "resources:read resources:write", advertisedAccess: ["read", "write"], mutationStatus: status });
     const r = await handleIdentityOAuthMcp(rpc("tools/call", { params: { name: "lifespace.create.task", arguments: { spaceId: "spc_synthetic", data: { name: "Synthetic only" } } } }), f.env);

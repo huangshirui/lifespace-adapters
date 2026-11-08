@@ -1,4 +1,5 @@
 import { projectNativeMutations, buildNativeMutation } from "./mutation-projection.mjs";
+import { projectNativeGets, buildNativeGet } from "./get-projection.mjs";
 import { loadSelectedModelSemantics } from "./progressive-discovery.mjs";
 import { buildLifeSpaceQueryRequest, projectSelectedModelsToMcp } from "./projection.mjs";
 
@@ -69,25 +70,30 @@ export function oauthResourceConfig(env, requestUrl) {
     metadata: resourceUrl.origin + META_PATH + resourceUrl.pathname };
 }
 
-function challenge(config, env, extra = "") {
-  // The initial OAuth challenge drives client scope selection. In Staging,
-  // request explicit write consent for real CRUD acceptance; Production stays
-  // read-only. Supported scopes alone do not make clients request write.
-  const scope = env?.ENVIRONMENT === "staging"
-    ? "resources:read resources:write" : "resources:read";
-  return "Bearer resource_metadata=\"" + config.metadata
-    + "\", scope=\"" + scope + "\"" + extra;
+// Core is the only MCP Server config authority. The public Core ingress
+// replaces this advisory header before its private Service Binding call.
+// No field here grants OAuth, Agent or User authority; execution still passes
+// Identity + Core's current Scope, Grants and exact operation checks.
+function resourceScopes(request) {
+  const hint = request.headers.get("x-lifespace-mcp-scope-ceiling");
+  return hint === "resources:read resources:write"
+    ? ["resources:read", "resources:write"] : ["resources:read"];
 }
 
-function authFailure(config, env, error = "invalid_token") {
+function challenge(config, request, extra = "") {
+  return "Bearer resource_metadata=\"" + config.metadata
+    + "\", scope=\"" + resourceScopes(request).join(" ") + "\"" + extra;
+}
+
+function authFailure(config, request, error = "invalid_token") {
   return json({ error: "OAuth authorization required" }, 401, {
-    "www-authenticate": challenge(config, env, ", error=\"" + error + "\""),
+    "www-authenticate": challenge(config, request, ", error=\"" + error + "\""),
   });
 }
 
-function insufficientScope(config, env) {
+function insufficientScope(config, request) {
   return json({ error: "insufficient_scope" }, 403, {
-    "www-authenticate": challenge(config, env, ", error=\"insufficient_scope\""),
+    "www-authenticate": challenge(config, request, ", error=\"insufficient_scope\""),
   });
 }
 
@@ -166,7 +172,7 @@ async function verifyOAuthToken(request, config, env) {
   return validateIntrospection(payload, config);
 }
 
-async function coreExecution(authorized, request, config, env) {
+async function coreExecution(authorized, request, config, env, delegationId = null) {
   if (!env?.CORE || typeof env.CORE.fetch !== "function"
     || !env?.IDENTITY || typeof env.IDENTITY.fetch !== "function") {
     return { error: "CORE_EXECUTION_NOT_CONFIGURED" };
@@ -183,7 +189,8 @@ async function coreExecution(authorized, request, config, env) {
         "content-type": "application/json",
         "x-lifespace-resource-secret": secret,
       },
-      body: JSON.stringify({ token, resource: config.resource }),
+      body: JSON.stringify({ token, resource: config.resource,
+        ...(delegationId ? { delegationId } : {}) }),
     });
   } catch { return { error: "IDENTITY_EXECUTION_UNAVAILABLE" }; }
   if (response.status !== 200) return { error: "IDENTITY_EXECUTION_DENIED" };
@@ -204,10 +211,14 @@ async function coreExecution(authorized, request, config, env) {
   return { token: data.accessToken };
 }
 
-async function coreJson(env, coreToken, path, method = "GET", body) {
+async function coreJson(env, coreToken, path, method = "GET", body, delegationId = null) {
+  const recordGet = method === "GET" && /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records\/rec_[A-Za-z0-9_-]+$/u.test(path);
   const mutationPath = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records(?:\/rec_[A-Za-z0-9_-]+)?$/u.test(path)
     && (method === "POST" && path.endsWith("/records") || ["PATCH", "DELETE"].includes(method) && !path.endsWith("/records"));
-  if (!mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
+  const oauthRequest = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/oauth-delegation-requests(?:\/arq_[a-f0-9]{32})?$/u.test(path)
+    && (method === "POST" && path.endsWith("/oauth-delegation-requests")
+      || method === "GET" && /\/arq_[a-f0-9]{32}$/u.test(path));
+  if (!oauthRequest && !recordGet && !mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
     return { error: "CORE_PATH_REJECTED" };
   }
   let response;
@@ -215,6 +226,7 @@ async function coreJson(env, coreToken, path, method = "GET", body) {
     response = await env.CORE.fetch("https://core.internal" + path, {
       method, headers: {
         authorization: "Bearer " + coreToken,
+        ...(delegationId ? { "x-lifespace-delegation-id": delegationId } : {}),
         accept: "application/json",
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
@@ -298,7 +310,14 @@ async function currentToolProjection(env, coreToken, selectedSpace, allowMutatio
       !item.spaces.every(space => space.spaceId === selectedSpace))) {
       return { error: "CORE_UNSCOPED_SEMANTICS" };
     }
-    const projected = projectSelectedModelsToMcp(selection);
+    const projected = projectSelectedModelsToMcp({
+      ...selection,
+      models: selection.models.filter(item => !Array.isArray(item.detail.mcpOperations)
+        || item.detail.mcpOperations.includes("query")),
+    });
+    const gets = projectNativeGets(selection);
+    projected.tools.push(...gets.tools);
+    Object.assign(projected.bindings, gets.bindings);
     if (allowMutations) {
       const mutations = projectNativeMutations(selection);
       projected.tools.push(...mutations.tools);
@@ -306,6 +325,72 @@ async function currentToolProjection(env, coreToken, selectedSpace, allowMutatio
     }
     return { projected };
   } catch { return { error: "CORE_DISCOVERY_UNAVAILABLE" }; }
+}
+
+
+// This is a UI protocol transport, never a Delegation authority. The user
+// approves only on the independent LifeSpace Account website.
+const DELEGATION_MODEL = /^[a-z][a-z0-9_]{1,62}$/u;
+const DELEGATION_ID = /^dlg_[A-Za-z0-9_-]+$/u;
+const REQUEST_ID = /^arq_[a-f0-9]{32}$/u;
+const DELEGATED_OPS = ["get", "query", "create", "update", "delete"];
+function userDelegationTools() {
+  return [
+    { name: "lifespace.request_user_delegation",
+      title: "Request LifeSpace User Delegation",
+      description: "Ask the signed-in user to approve one specific Agent operation. Returns a LifeSpace Account confirmation URL; no authority is granted until approval.",
+      inputSchema: {type:"object",additionalProperties:false,required:["modelKey","operation","reason"],
+        properties:{
+          modelKey:{type:"string",pattern:"^[a-z][a-z0-9_]{1,62}$"},
+          operation:{type:"string",enum:DELEGATED_OPS},
+          reason:{type:"string",minLength:4,maxLength:250},
+        }},
+    },
+    { name: "lifespace.user_delegation_status",
+      title: "Check LifeSpace Delegation Approval",
+      description: "Check the current status of an explicit User Delegation request, then retrieve the Core-issued delegationId when approved.",
+      inputSchema:{type:"object",additionalProperties:false,required:["requestId"],
+        properties:{requestId:{type:"string",pattern:"^arq_[a-f0-9]{32}$"}}},
+    },
+    { name: "lifespace.execute_user_delegation",
+      title: "Execute One Approved LifeSpace User Delegation",
+      description: "Use an approved, bounded, single-use LifeSpace Delegation for its exact model operation. LifeSpace Core rechecks the current User authority and records Principal=User / Actor=Agent.",
+      annotations:{readOnlyHint:false,destructiveHint:true,idempotentHint:false,openWorldHint:false},
+      inputSchema:{type:"object",additionalProperties:false,required:["delegationId","modelKey","operation"],
+        properties:{
+          delegationId:{type:"string",pattern:"^dlg_[A-Za-z0-9_-]+$"},
+          modelKey:{type:"string",pattern:"^[a-z][a-z0-9_]{1,62}$"},
+          operation:{type:"string",enum:DELEGATED_OPS},
+          recordId:{type:"string",pattern:"^rec_[A-Za-z0-9_-]+$"},
+          data:{type:"object",description:"Canonical model payload validated by LifeSpace Core."},
+        }},
+    },
+  ];
+}
+function delegatedCoreOperation(spaceId, args) {
+  if (!args || typeof args !== "object" || Array.isArray(args)
+    || Object.keys(args).some(k => !["delegationId","modelKey","operation","recordId","data"].includes(k))
+    || !DELEGATION_ID.test(args.delegationId||"") || !DELEGATION_MODEL.test(args.modelKey||"")
+    || !DELEGATED_OPS.includes(args.operation)) return null;
+  const base="/api/v1/spaces/" + encodeURIComponent(spaceId)
+    + "/models/" + encodeURIComponent(args.modelKey) + "/records";
+  const id=args.recordId;
+  if (args.operation === "get") {
+    if (!/^rec_[A-Za-z0-9_-]+$/u.test(id||"") || args.data!==undefined) return null;
+    return {method:"GET",path:base+"/"+encodeURIComponent(id)};
+  }
+  if (args.operation === "query") {
+    if (id!==undefined || !args.data || typeof args.data!=="object" || Array.isArray(args.data)) return null;
+    return {method:"POST",path:base+"/query",body:args.data};
+  }
+  if (args.operation === "create") {
+    if (id!==undefined || !args.data || typeof args.data!=="object" || Array.isArray(args.data)) return null;
+    return {method:"POST",path:base,body:args.data};
+  }
+  if (!/^rec_[A-Za-z0-9_-]+$/u.test(id||"") || !args.data
+    || typeof args.data!=="object" || Array.isArray(args.data)) return null;
+  if (!Number.isSafeInteger(args.data.version) || args.data.version<1) return null;
+  return {method:args.operation==="update"?"PATCH":"DELETE",path:base+"/"+encodeURIComponent(id),body:args.data};
 }
 
 function validOrigin(request, config) {
@@ -390,7 +475,7 @@ export async function handleIdentityOAuthMcp(request, env) {
     return json({
       resource: config.resource,
       authorization_servers: [config.issuer],
-      scopes_supported: ["resources:read", ...(env.ENVIRONMENT === "staging" ? ["resources:write"] : [])],
+      scopes_supported: resourceScopes(request),
       bearer_methods_supported: ["header"],
     }, 200, { "cache-control": "public, max-age=300" });
   }
@@ -400,8 +485,8 @@ export async function handleIdentityOAuthMcp(request, env) {
 
   const authorized = await verifyOAuthToken(request, config, env);
   if (authorized.error === "resource_unavailable") return json({ error: "Resource authentication unavailable" }, 503);
-  if (authorized.error === "insufficient_scope") return insufficientScope(config, env);
-  if (authorized.error) return authFailure(config, env);
+  if (authorized.error === "insufficient_scope") return insufficientScope(config, request);
+  if (authorized.error) return authFailure(config, request);
 
   if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
     return json({ error: "Expected application/json" }, 415);
@@ -453,14 +538,16 @@ export async function handleIdentityOAuthMcp(request, env) {
   if (execution.error) return json({ error: execution.error }, 503);
 
   const current = await currentToolProjection(env, execution.token, authorized.context.spaceId,
-    env.ENVIRONMENT === "staging" && authorized.context.scopes.includes("resources:write"));
+    authorized.context.scopes.includes("resources:write"));
   if (current.error) return json({ error: current.error }, 503);
   if (message.method === "tools/list") {
     if (message.params && (typeof message.params !== "object" || Array.isArray(message.params)
       || Object.keys(message.params).some(key => key !== "cursor" && !(modern && key === "_meta")) || message.params.cursor)) {
       return rpcError(message.id, -32602, "Unsupported pagination parameters");
     }
-    return rpcResult(message.id, { tools: current.projected.tools, ...(modern ? { ttlMs: 0, cacheScope: "private" } : {}) }, modern);
+    return rpcResult(message.id, { tools: [...current.projected.tools,
+      ...(authorized.context.mayRequestDelegation ? userDelegationTools() : [])],
+      ...(modern ? { ttlMs: 0, cacheScope: "private" } : {}) }, modern);
   }
 
   if (!message.params || typeof message.params !== "object" || Array.isArray(message.params)
@@ -469,13 +556,55 @@ export async function handleIdentityOAuthMcp(request, env) {
     || Array.isArray(message.params.arguments)) {
     return rpcError(message.id, -32602, "Invalid tool invocation");
   }
+  if (message.params.name.startsWith("lifespace.") && [
+      "lifespace.request_user_delegation", "lifespace.user_delegation_status",
+      "lifespace.execute_user_delegation"].includes(message.params.name)) {
+    if (!authorized.context.mayRequestDelegation)
+      return rpcError(message.id, -32602, "User Delegation is disabled for this OAuth grant");
+    const args=message.params.arguments;
+    const space=authorized.context.spaceId;
+    let path,method="GET",payload,delegation=null;
+    if (message.params.name==="lifespace.request_user_delegation") {
+      if (Object.keys(args).some(k=>!["modelKey","operation","reason"].includes(k))
+        || !DELEGATION_MODEL.test(args.modelKey||"") || !DELEGATED_OPS.includes(args.operation)
+        || typeof args.reason!=="string" || args.reason.trim().length<4 || args.reason.trim().length>250)
+        return rpcError(message.id,-32602,"Invalid User Delegation request");
+      if (["create","update","delete"].includes(args.operation)
+        && !authorized.context.scopes.includes("resources:write"))
+        return rpcError(message.id,-32602,"OAuth Client did not request write Scope");
+      path="/api/v1/spaces/"+encodeURIComponent(space)+"/oauth-delegation-requests";
+      method="POST";payload=args;
+    } else if (message.params.name==="lifespace.user_delegation_status") {
+      if (Object.keys(args).length!==1 || !REQUEST_ID.test(args.requestId||""))
+        return rpcError(message.id,-32602,"Invalid Authorization Request ID");
+      path="/api/v1/spaces/"+encodeURIComponent(space)+"/oauth-delegation-requests/"+encodeURIComponent(args.requestId);
+    } else {
+      const next=delegatedCoreOperation(space,args);
+      if (!next) return rpcError(message.id,-32602,"Invalid Delegation execution arguments");
+      if (["create","update","delete"].includes(args.operation)
+        && !authorized.context.scopes.includes("resources:write"))
+        return rpcError(message.id,-32602,"OAuth Client did not request write Scope");
+      path=next.path;method=next.method;payload=next.body;delegation=args.delegationId;
+    }
+    const coreToken=delegation
+      ? await coreExecution(authorized,request,config,env,delegation)
+      : execution;
+    if (coreToken.error) return json({error:coreToken.error},503);
+    const outcome=await coreJson(env,coreToken.token,path,method,payload,delegation);
+    return rpcResult(message.id,{
+      ...(outcome.error ? {isError:true} : {}),
+      content:[{type:"text",text: outcome.error||JSON.stringify(outcome.payload?.data??outcome.payload)}],
+    },modern);
+  }
   const binding = current.projected.bindings[message.params.name];
   if (!binding) return rpcError(message.id, -32602, "Tool is not in the currently authorized projection");
   let operation;
   try {
     operation = binding.kind === "native-mutation"
       ? buildNativeMutation(binding, message.params.arguments)
-      : buildLifeSpaceQueryRequest(binding, message.params.arguments);
+      : binding.kind === "native-get"
+        ? buildNativeGet(binding, message.params.arguments)
+        : buildLifeSpaceQueryRequest(binding, message.params.arguments);
   } catch { return rpcError(message.id, -32602, "Invalid arguments for current model semantics"); }
   if (!operation.path.startsWith("/api/v1/spaces/"
     + encodeURIComponent(authorized.context.spaceId) + "/")) {

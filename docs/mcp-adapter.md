@@ -1,5 +1,17 @@
 # MCP Adapter（MCP 协议适配器）
 
+## 2026-11-08 · Third-party Agent Delegation confirmation (under acceptance)
+
+The OAuth MCP Resource Server has three additional **opt-in-gated** tools:
+- `lifespace.request_user_delegation` — requests one exact current Native Model operation on behalf of the OAuth consenting User; receives a LifeSpace Account URL for the User to open and explicitly approve/deny. No authority is returned on creation.
+- `lifespace.user_delegation_status` — polls the current pending/approved/denied/expired `arq_*` state; returns a `dlg_*` selector only after Account approval.
+- `lifespace.execute_user_delegation` — requires that precise approved `dlg_*`, exact model operation and canonical Core payload; Resource Server asks Identity for a short-lived represented User/Agent JWT and passes the ID as an explicit Core selector. The adapter **does not** treat the URL or Delegation ID as bearer auth.
+
+The web approval step is owned by LifeSpace Account and authenticated independently of the third-party Agent; existing in-app/self-built Agent confirmation and trusted WeCom Router chat confirmation are unchanged. OAuth consent read/write and `allow_user_authorization` are not equivalent to Delegation. The authoritative Principal/Actor/Delegation checks, successful-change atomic single-use consumption and audit all remain in Core.
+
+The new URL/Approval/Execution path is **not production-deployed or real Staging E2E accepted**; the adapter candidate must be deployed only after its paired reviewed LifeSpace Core/Identity/Account candidate, with precise Scope and private Service Bindings. See private platform release record. Historical Staging-only sections below describe development evolution, not current environment-specific authority.
+
+
 ## Source of truth / 事实来源
 
 LifeSpace owns global Identity, OAuth authorization, Space, Membership, Data Grant, Agent/Delegation, Application × Model Access, Model Policy, and current effective authority. This repository only adapts **verified LifeSpace contracts** into MCP transport and tool schemas.
@@ -126,27 +138,33 @@ repository contains only synthetic hostnames and no live infrastructure secrets.
 
 The MCP Resource transport supports both `2026-07-28` stateless per-request metadata and `2025-11-25` legacy handshake. Modern `server/discover`, `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name` validation, HeaderMismatch and UnsupportedProtocolVersion errors are tested using synthetic requests. Neither protocol version changes LifeSpace Principal/Actor/Delegation: current read-only Agent Direct authority continues to be verified by Core. Protocol interoperability in live ChatGPT/Claude clients and Identity client registration are still pending Staging acceptance. 
 
-## Staging OAuth write-consent discovery / Staging 写入授权发起
+## Production-governed OAuth Scope discovery / 正式 OAuth 权限申请
 
-MCP clients select OAuth scopes from the initial `WWW-Authenticate` challenge
-when it includes a `scope` parameter. Merely listing
-`resources:write` under RFC 9728 `scopes_supported` does not cause a
-client such as ChatGPT to request write access when the challenge explicitly
-only asks for `resources:read`.
+The selected **current enabled Core MCP Server** owns the Resource-level
+capability ceiling. Core reads its currently configured operations and privately
+overwrites the adapter-bound `x-lifespace-mcp-scope-ceiling` header. This
+advisory metadata drives RFC 9728 `scopes_supported` and the initial
+`WWW-Authenticate` Scope. The private Adapter defaults to **read only**
+when the header is missing/invalid; it does not infer scopes from Staging versus
+Production. The public client cannot create Authority by supplying this header.
 
-For **Staging only**, the initial challenge therefore advertises
-`scope="resources:read resources:write"` to exercise the reviewed Native
-CRUD path with explicit human OAuth Consent. For **Production**, the challenge
-remains `scope="resources:read"`. Existing read-only authorizations are not
-silently upgraded. Core still restricts execution by current authorization,
-Agent Grants, Application Model Access, exact selected MCP Server operation,
-Model Policy and record version.
+At `/oauth/authorize` and human confirmation, Identity independently
+revalidates the exact currently enabled Core MCP Resource's allowed scopes.
+The Client's actual requested Scope is an upper bound (never expanded);
+Identity mints no write execution authority without both the active consent
+and live OAuth Access Token. Core always intersects authorized credentials,
+Application × Model Access, Agent Data Grant, exact Server operation, Policy
+and optimistic concurrency, in **every environment**.
 
-This is a Staging acceptance profile, not a mandate that all production
-consumers should request write access. Any future production write enablement
-must adopt a least-privilege per-Resource/tool policy and separate release gate.
-A fresh client authorization is required after a challenge change; refreshing
-tool discovery alone cannot expand a previously issued read-only OAuth token.
+This enables the same code to be production-ready without deploying any
+public Production OAuth MCP service binding or silently broadening the
+existing read-only authorizations. Production provisioning and live E2E need
+separate owner-reviewed release gates. Current draft now implements Native Query, Get and Create/Update/Delete with
+exact Core per-Server operation gating; Actions, Person Directory and External
+Model tool coverage still require separate implementation
+before the full configured Server surface is considered production complete.
+User Delegation remains an independent, explicitly consented `arq_*` →
+`dlg_*` flow and is not provided by broad OAuth Scope.
 
 ## Staging Native write candidate / Staging 原生模型写入候选
 
