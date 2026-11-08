@@ -10,7 +10,7 @@ const REFRESH = /^lsp_ort_[A-Za-z0-9_-]{32,256}$/u;
 const MCP_RESOURCE = /^\/mcp\/mcp_[a-f0-9]{32}$/u;
 
 function fail(message) { throw new Error("Staging OAuth smoke: " + message); }
-function stageOrigin(raw) {
+export function stageOrigin(raw) {
   let url;
   try { url = new URL(raw); } catch { fail("invalid staging URL"); }
   if (url.protocol !== "https:" || !/^[a-z0-9-]+-staging\.[a-z0-9.-]+$/u.test(url.hostname)
@@ -45,7 +45,7 @@ export function checkSmokeConfig(input) {
 }
 
 async function request(fetchImpl, url, init) {
-  try { return await fetchImpl(url, { ...init, signal: AbortSignal.timeout(12000) }); }
+  try { return await fetchImpl(url, { ...init, redirect: "manual", signal: AbortSignal.timeout(12000) }); }
   catch { fail("network request unavailable"); }
 }
 function toolRequest(token, method) {
