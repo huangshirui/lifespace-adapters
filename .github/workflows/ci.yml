@@ -29,10 +29,10 @@ jobs:
             docs/mcp-adapter.md
             docs/github-hardening.md
             adapters/mcp/README.md
-            adapters/mcp/src/progressive-discovery.mjs
-            adapters/mcp/src/projection.mjs
-            adapters/mcp/test/projection.test.mjs
-            adapters/mcp/test/projection-fail-closed.test.mjs
+            adapters/mcp/src/generic-operation-projection.mjs
+            adapters/mcp/src/identity-oauth-worker.mjs
+            adapters/mcp/test/generic-operation-projection.test.mjs
+            adapters/mcp/test/identity-oauth-worker.test.mjs
             shared/README.md
           )
 
@@ -85,12 +85,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Syntax check canonical MCP projection and Identity OAuth Resource Worker
+      - name: Syntax check Core-operation MCP projection and Identity OAuth Resource Worker
         run: |
-          node --check adapters/mcp/src/progressive-discovery.mjs
-          node --check adapters/mcp/src/projection.mjs
+          node --check adapters/mcp/src/generic-operation-projection.mjs
           node --check adapters/mcp/src/identity-oauth-worker.mjs
-      - name: Test MCP query projection and Identity OAuth Protected Resource
+      - name: Test Core operation projection and Identity OAuth Protected Resource
         run: node --test adapters/mcp/test/*.test.mjs
       - name: Dry-run independent Identity OAuth MCP Resource Server package
         run: >-
