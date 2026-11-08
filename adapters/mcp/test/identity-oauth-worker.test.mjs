@@ -350,6 +350,28 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
     $defs: { Create: { type: "object", properties: { name: { type: "string" } }, required: ["name"], additionalProperties: false },
       Update: { type: "object", properties: { name: { type: "string" }, version: { type: "integer" } }, required: ["version"], additionalProperties: false } },
   };
+  // Core owns the same operation projection for every storage kind.
+  // The test transport knows only opaque operationRef; no Native/External/Person dispatch.
+  const operations = Array.isArray(mcpOperations) ? mcpOperations
+    : mutations ? ["query", "create", "update", "delete"] : ["query"];
+  const allowedOperations = operations.filter(op => ["query","get"].includes(op)
+    ? advertisedAccess.includes("read") : advertisedAccess.includes("write")
+      && oauthScopes.includes("resources:write"));
+  const syntheticCatalog = modelKeys.flatMap((key,index) => allowedOperations.map((op,j) => {
+    const ref = "op_" + (index * 8 + j + 1).toString(16).padStart(64,"0");
+    return {operationRef:ref,modelKey:key,display:"Task",operation:op,
+      title:op+" Task",description:"Core current authorized operation",
+      inputSchema:{type:"object",additionalProperties:false,
+        properties:{spaceId:{type:"string",enum:[wrongSpace?"spc_other":"spc_synthetic"]},
+          ...(op==="get"||op==="update"||op==="delete"
+            ?{recordId:{type:"string",minLength:1}}:{}),
+          ...(op==="get"?{}:{data:op==="create"&&mutations
+            ?{$ref:"#/$defs/Create"}:{type:"object"}})},
+        required:["spaceId",...(op==="get"||op==="update"||op==="delete"?["recordId"]:[]),
+          ...(op==="create"||op==="update"||op==="delete"?["data"]:[])],
+        ...(op==="create"&&mutations?{$defs:detail.data.mutations.$defs}:{})}};
+  }));
+  const operationByRef = new Map(syntheticCatalog.map(row => [row.operationRef,row.operation]));
   const env = {
     ...base, ENVIRONMENT: environment,
     IDENTITY: { fetch: async (url, init) => {
@@ -381,6 +403,30 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       }
       if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/oauth-delegation-requests/arq_"+"f".repeat(32)) {
         return Response.json({data:{id:"arq_"+"f".repeat(32),status:"approved",delegationId:"dlg_synthetic"}});
+      }
+      if (path === "/api/v1/spaces/spc_synthetic/_discovery/operations") {
+        if (discoveryStatus !== 200)
+          return Response.json({error:"synthetic Core unavailability"},{status:discoveryStatus});
+        return Response.json({data:{operations:syntheticCatalog}});
+      }
+      const invocation = /^\/api\/v1\/spaces\/spc_synthetic\/_operations\/(op_[a-f0-9]{64})\/invoke$/u.exec(path);
+      if (invocation) {
+        assert.equal(init.method,"POST");
+        const requested = JSON.parse(init.body);
+        assert.deepEqual(Object.keys(requested),["arguments"]);
+        const op = operationByRef.get(invocation[1]);
+        if (!op) return Response.json({error:"unknown operation"},{status:404});
+        if (op === "query") {
+          if (denied) return Response.json({error:"forbidden"},{status:403});
+          if (queryThrows) throw new Error("Synthetic Core query unavailable");
+          if (queryStatus !== 200)
+            return Response.json({error:{code:"SYNTHETIC_PRIVATE_ERROR",message:"Do not expose upstream details"}},{status:queryStatus});
+          return Response.json({data:{items:[{title:"Synthetic only"}]}});
+        }
+        if (op === "get") return Response.json({data:{id:"rec_synthetic",version:1}});
+        if (mutationStatus !== 201) return Response.json({error:"synthetic write failure"},{status:mutationStatus});
+        if (op === "delete") return new Response(null,{status:204});
+        return Response.json({data:{id:"rec_synthetic",version:1}},{status:op==="create"?201:200});
       }
       if (path === "/api/v1/me/_discovery/inventory") {
         if (discoveryStatus !== 200) return Response.json({ error: "synthetic upstream details" }, { status: discoveryStatus });
