@@ -497,7 +497,7 @@ test("modern tools/list and tools/call use per-request metadata and batched Core
   const result = (await called.json()).result;
   assert.equal(result.resultType, "complete");
   assert.equal(JSON.parse(result.content[0].text).items[0].title, "Synthetic only");
-  assert.equal(f.calls.filter(x => x.path.endsWith("/_discovery/models/batch")).length, 2);
+  assert.equal(f.calls.filter(x => x.path.endsWith("/_discovery/operations")).length, 2);
 });
 
 test("modern headers/body mismatch, unsupported revision and legacy-only methods fail closed", async () => {
@@ -530,8 +530,7 @@ test("OAuth Agent Direct tools/list uses only Identity-minted Core JWT and scope
   assert.deepEqual(f.calls.map(x => x.service + " " + x.path), [
     "IDENTITY /oauth/introspect",
     "IDENTITY /oauth/execution-tokens",
-    "CORE /api/v1/me/_discovery/inventory",
-    "CORE /api/v1/spaces/spc_synthetic/_discovery/models/batch",
+    "CORE /api/v1/spaces/spc_synthetic/_discovery/operations",
   ]);
 });
 
@@ -542,30 +541,34 @@ test("tools/list projects 20 authorized Models in one Core batch request, not 20
   const data = await response.json();
   assert.equal(data.result.tools.length, 20);
   assert.equal(new Set(data.result.tools.map(item => item.name)).size, 20);
-  assert.equal(f.calls.filter(x => x.service === "CORE").length, 2);
+  assert.equal(f.calls.filter(x => x.service === "CORE").length, 1);
   assert.deepEqual(f.calls.filter(x => x.service === "CORE").map(x => x.path), [
-    "/api/v1/me/_discovery/inventory",
-    "/api/v1/spaces/spc_synthetic/_discovery/models/batch",
+    "/api/v1/spaces/spc_synthetic/_discovery/operations",
   ]);
 });
 
 test("OAuth MCP tools/call executes Canonical Query on the selected Space with current Core authority", async () => {
   const f = connectedFixture();
   const req = rpc("tools/call", { params: { name: "lifespace.query.task", arguments: {
-    spaceId: "spc_synthetic", search: "Synthetic", filters: [{ field: "status", operator: "eq", value: "open" }],
-    limit: 3,
+    spaceId: "spc_synthetic", data: {
+      search: { text: "Synthetic" },
+      filter: { field: "status", op: "eq", value: "open" },
+      page: { limit: 3 },
+    },
   } } });
   const result = await handleIdentityOAuthMcp(req, f.env);
   assert.equal(result.status, 200);
   const resultBody = await result.json();
   assert.deepEqual(JSON.parse(resultBody.result.content[0].text), { items: [{ title: "Synthetic only" }] });
-  const coreQuery = f.calls.find(x => x.path.endsWith("/records/query"));
+  const coreQuery = f.calls.find(x => /\/_operations\/op_[a-f0-9]{64}\/invoke$/u.test(x.path));
   assert.equal(coreQuery.init.method, "POST");
-  assert.deepEqual(JSON.parse(coreQuery.init.body), {
-    search: { text: "Synthetic" },
-    filter: { field: "status", op: "eq", value: "open" },
-    page: { limit: 3 },
-  });
+  assert.deepEqual(JSON.parse(coreQuery.init.body), { arguments: {
+    spaceId:"spc_synthetic", data:{
+      search: { text: "Synthetic" },
+      filter: { field: "status", op: "eq", value: "open" },
+      page: { limit: 3 },
+    },
+  } });
   assert.ok(!JSON.stringify(f.calls.filter(x => x.service === "CORE")).includes(TOKEN));
 });
 
@@ -623,7 +626,7 @@ test("OAuth read/write consent and a write-capable Core preview cannot widen rea
   }), f.env);
   assert.equal(read.status, 200);
   assert.equal(JSON.parse((await read.json()).result.content[0].text).items[0].title, "Synthetic only");
-  assert.equal(f.calls.filter(call => call.path.endsWith("/records/query")).length, 1);
+  assert.equal(f.calls.filter(call => call.path.includes("/_operations/op_")).length, 1);
   assert.ok(!JSON.stringify(f.calls.filter(call => call.service === "CORE")).includes(TOKEN));
 });
 
@@ -655,15 +658,15 @@ test("Core Canonical Query 400/422 becomes a bounded MCP invalid-arguments tool 
     const f = connectedFixture({ queryStatus: status });
     const response = await handleIdentityOAuthMcp(modernRpc("tools/call", {
       params: { name: "lifespace.query.task", arguments: {
-        spaceId: "spc_synthetic", cursor: "synthetic-invalid-cursor",
+        spaceId: "spc_synthetic", data: { cursor: "synthetic-invalid-cursor" },
       } },
     }), f.env);
     assert.equal(response.status, 200);
     const payload = await response.json();
     assert.equal(payload.result.resultType, "complete");
     assert.equal(payload.result.isError, true);
-    assert.deepEqual(payload.result.content, [{ type: "text", text: "INVALID_QUERY_ARGUMENTS" }]);
-    assert.equal(f.calls.filter(call => call.path.endsWith("/records/query")).length, 1);
+    assert.deepEqual(payload.result.content, [{ type: "text", text: "INVALID_OPERATION_ARGUMENTS" }]);
+    assert.equal(f.calls.filter(call => call.path.includes("/_operations/op_")).length, 1);
     assert.ok(!JSON.stringify(payload).includes("SYNTHETIC_PRIVATE_ERROR"));
     assert.ok(!JSON.stringify(payload).includes(TOKEN));
   }
@@ -722,7 +725,7 @@ test("Staging projects and executes only Core contract-backed Native mutations w
     assert.equal(result.isError, undefined);
     if (op === "delete") assert.equal(JSON.parse(result.content[0].text).deleted, true);
   }
-  assert.deepEqual(f.calls.filter(c => /\/records(?:\/rec_synthetic)?$/u.test(c.path)).map(c => c.init.method), ["POST", "PATCH", "DELETE"]);
+  assert.deepEqual(f.calls.filter(c => /\/_operations\/op_[a-f0-9]{64}\/invoke$/u.test(c.path)).map(c => c.init.method), ["POST", "POST", "POST"]);
   for (const args of [
     { spaceId: "spc_other", data: { name: "No" } },
     { spaceId: "spc_synthetic", data: {}, principalUserId: "usr_other" },
@@ -748,7 +751,8 @@ test("Get-only Server lists only Native Get and executes exact record read", asy
   assert.deepEqual(JSON.parse((await fetched.json()).result.content[0].text),
     { id: "rec_synthetic", version: 1 });
   assert.ok(f.calls.some(c => c.service === "CORE"
-    && c.path.endsWith("/models/task/records/rec_synthetic") && c.init.method === "GET"));
+    && /\/_operations\/op_[a-f0-9]{64}\/invoke$/u.test(c.path)
+    && JSON.parse(c.init.body).arguments.recordId === "rec_synthetic"));
   const forbidden = await handleIdentityOAuthMcp(rpc("tools/call", {
     params: { name: "lifespace.query.task", arguments: { spaceId: "spc_synthetic" } },
   }), f.env);
@@ -814,7 +818,7 @@ test("Production and Staging share consented write semantics; read-only/ungrante
   const production = connectedFixture({ mutations: true, environment: "production", oauthScopes: "resources:read resources:write", advertisedAccess: ["read", "write"] });
   const listed = await handleIdentityOAuthMcp(rpc("tools/list"), production.env);
   assert.deepEqual((await listed.json()).result.tools.map(t => t.name), [
-    "lifespace.query.task", "lifespace.create.task", "lifespace.update.task", "lifespace.delete.task",
+    "lifespace.create.task", "lifespace.delete.task", "lifespace.query.task", "lifespace.update.task",
   ]);
   for (const [status, code] of [[400, "INVALID_MUTATION_ARGUMENTS"], [403, "CORE_PERMISSION_DENIED"], [409, "RECORD_VERSION_CONFLICT"]]) {
     const f = connectedFixture({ mutations: true, environment: "staging", oauthScopes: "resources:read resources:write", advertisedAccess: ["read", "write"], mutationStatus: status });
