@@ -278,8 +278,9 @@ test("host-origin mismatch, CORS origin, query/path confusion and wrong transpor
 });
 
 
-function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false } = {}) {
+function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"] } = {}) {
   const calls = [];
+  let tokenActive = true;
   const signToken = ["eyJ" + "syntheticheader", "syntheticpayload", "syntheticsignature"].join(".");
   const schema = "a".repeat(64);
   const modelKeys = modelCount === 1 ? ["task"]
@@ -289,7 +290,7 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
     models: modelKeys.map(key => ({ key, version: 3, schemaHash: schema })),
     spaces: [{
       spaceId: wrongSpace ? "spc_other" : "spc_synthetic",
-      spaceName: "Synthetic", models: modelKeys.map(key => ({ modelKey: key, access: ["read"] })),
+      spaceName: "Synthetic", models: modelKeys.map(key => ({ modelKey: key, access: advertisedAccess })),
     }],
   } };
   const detail = { data: {
@@ -318,7 +319,7 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
     IDENTITY: { fetch: async (url, init) => {
       const path = new URL(url).pathname;
       calls.push({ service: "IDENTITY", path, init });
-      if (path === "/oauth/introspect") return Response.json(active);
+      if (path === "/oauth/introspect") return Response.json(tokenActive ? { ...active, scope: oauthScopes } : { active: false });
       if (path === "/oauth/execution-tokens") {
         assert.equal(init.headers["x-lifespace-resource-secret"], SECRET);
         assert.deepEqual(JSON.parse(init.body), { token: TOKEN, resource: RESOURCE });
@@ -361,7 +362,7 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       throw new Error("Unexpected Core endpoint " + path);
     } },
   };
-  return { env, calls };
+  return { env, calls, revokeOAuth: () => { tokenActive = false; } };
 }
 
 test("2026-07-28 stateless server/discover advertises both modern and legacy protocols", async () => {
@@ -464,6 +465,64 @@ test("OAuth MCP tools/call executes Canonical Query on the selected Space with c
     page: { limit: 3 },
   });
   assert.ok(!JSON.stringify(f.calls.filter(x => x.service === "CORE")).includes(TOKEN));
+});
+
+test("revoking an OAuth Authorization invalidates cached MCP tool calls without a tool refresh", async () => {
+  const f = connectedFixture();
+  const list = await handleIdentityOAuthMcp(rpc("tools/list"), f.env);
+  assert.equal(list.status, 200);
+  assert.equal((await list.json()).result.tools[0].name, "lifespace.query.task");
+  const before = f.calls.length;
+
+  // Identity invalidates the authorization after the Client caches tools/list.
+  // An unexpired client tool schema must never become execution authority.
+  f.revokeOAuth();
+  for (const request of [
+    rpc("tools/call", { params: { name: "lifespace.query.task", arguments: { spaceId: "spc_synthetic" } } }),
+    modernRpc("tools/call", { params: { name: "lifespace.query.task", arguments: { spaceId: "spc_synthetic" } } }),
+    rpc("tools/list"),
+  ]) {
+    const response = await handleIdentityOAuthMcp(request, f.env);
+    assert.equal(response.status, 401);
+    assert.match(response.headers.get("www-authenticate") || "", /invalid_token/u);
+    assert.ok(!JSON.stringify(await response.json()).includes(TOKEN));
+  }
+  assert.deepEqual(f.calls.slice(before).map(call => call.path), [
+    "/oauth/introspect", "/oauth/introspect", "/oauth/introspect",
+  ]);
+  assert.equal(f.calls.filter(call => call.path.endsWith("/records/query")).length, 0);
+});
+
+test("OAuth read/write consent and a write-capable Core preview cannot widen read-only MCP execution", async () => {
+  // Tests the existing read-only resource server, not a new write capability.
+  // Even a broader OAuth consent/Grant/Server must not forge a mutation tool.
+  const f = connectedFixture({
+    oauthScopes: "resources:read resources:write", advertisedAccess: ["read", "write"],
+  });
+  const list = await handleIdentityOAuthMcp(rpc("tools/list"), f.env);
+  assert.equal(list.status, 200);
+  assert.deepEqual((await list.json()).result.tools.map(tool => tool.name), ["lifespace.query.task"]);
+
+  for (const name of [
+    "lifespace.create.task", "lifespace.update.task",
+    "lifespace.delete.task", "lifespace.action.task.complete",
+  ]) {
+    const response = await handleIdentityOAuthMcp(rpc("tools/call", {
+      params: { name, arguments: { spaceId: "spc_synthetic", title: "Synthetic only" } },
+    }), f.env);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).error.code, -32602);
+  }
+  assert.equal(f.calls.some(call => call.path.endsWith("/records")), false);
+  assert.equal(f.calls.some(call => call.path.endsWith("/records/query")), false);
+
+  const read = await handleIdentityOAuthMcp(rpc("tools/call", {
+    params: { name: "lifespace.query.task", arguments: { spaceId: "spc_synthetic" } },
+  }), f.env);
+  assert.equal(read.status, 200);
+  assert.equal(JSON.parse((await read.json()).result.content[0].text).items[0].title, "Synthetic only");
+  assert.equal(f.calls.filter(call => call.path.endsWith("/records/query")).length, 1);
+  assert.ok(!JSON.stringify(f.calls.filter(call => call.service === "CORE")).includes(TOKEN));
 });
 
 test("Agent cannot select a second Space, stale tool or write API through OAuth MCP adapter", async () => {
