@@ -76,3 +76,16 @@ The same OAuth Resource endpoint now accepts modern stateless `2026-07-28` reque
 Client registration remains a separate OAuth Authorization Server concern. The 2026-07-28 MCP specification prefers HTTPS Client ID Metadata Documents (CIMD); unrestricted DCR is not required and must not be enabled merely to claim protocol compatibility. Before declaring broad third-party-client readiness, validate safe CIMD/pre-registration and actual clients in Staging.
 
 Reference: https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
+
+## Dedicated Staging OAuth revocation smoke test / 独立测试授权撤销
+
+`scripts/verify-staging-oauth-revocation.mjs` is an **operator-run, destructive test for a disposable Staging OAuth authorization**, not a production test, public registration bypass, or ChatGPT connector disconnection workflow.
+
+- Prerequisite: authorize a separate synthetic Staging OAuth Client/Agent/Space with at least one readable model Tool using the approved Account PKCE Consent process. Keep the existing ChatGPT connector out of this test.
+- Provide an access token in a local access-token file; for **authorization** revocation, provide its matching refresh token in a separate local refresh-token file. Keep files access-restricted, off GitHub/CI artifacts/chat/logs, and delete after the test. Never supply tokens in command-line arguments or GitHub Action inputs.
+- Set `MCP_STAGING_RESOURCE_URI` to the exact `https://*-staging.<domain>/mcp/mcp_<32-hex>` HTTPS Resource; set `MCP_STAGING_OAUTH_ISSUER` to the matching Staging OAuth issuer origin; set `MCP_STAGING_CLIENT_ID` to the registered client ID. The script verifies the Resource metadata advertises the selected issuer.
+- Set `MCP_STAGING_REVOKE_MODE=authorization` to revoke the parent OAuth Authorization **using its refresh token**, or `access-token` to revoke only one access token. `MCP_STAGING_REVOKE_CONFIRM=REVOKE_DEDICATED_STAGING_OAUTH` is mandatory. Set `MCP_STAGING_ACCESS_TOKEN_FILE` and, for authorization mode, `MCP_STAGING_REFRESH_TOKEN_FILE` to the local file paths.
+- Run `node adapters/mcp/scripts/verify-staging-oauth-revocation.mjs` from the repository root. It checks: matching resource metadata → baseline `tools/list` HTTP 200 with at least one tool → `/oauth/revoke` HTTP 200 → **same cached bearer** `tools/list` HTTP 401. Only status codes, tool count and mode are reported; no raw token, Core body or business data is logged.
+- A passing smoke run proves immediate denial of the old token, not full user-facing Account authorization management. That remains LifeSpace #481. The read-only MCP Adapter does not provide write tools: staged governed mutation work is tracked in LifeSpace #493.
+
+All documentation examples must remain synthetic; no live resource URL, token file, test identity or user records belong in this public repository.
