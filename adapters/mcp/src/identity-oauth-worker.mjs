@@ -69,25 +69,30 @@ export function oauthResourceConfig(env, requestUrl) {
     metadata: resourceUrl.origin + META_PATH + resourceUrl.pathname };
 }
 
-function challenge(config, env, extra = "") {
-  // The initial OAuth challenge drives client scope selection. In Staging,
-  // request explicit write consent for real CRUD acceptance; Production stays
-  // read-only. Supported scopes alone do not make clients request write.
-  const scope = env?.ENVIRONMENT === "staging"
-    ? "resources:read resources:write" : "resources:read";
-  return "Bearer resource_metadata=\"" + config.metadata
-    + "\", scope=\"" + scope + "\"" + extra;
+// Core is the only MCP Server config authority. The public Core ingress
+// replaces this advisory header before its private Service Binding call.
+// No field here grants OAuth, Agent or User authority; execution still passes
+// Identity + Core's current Scope, Grants and exact operation checks.
+function resourceScopes(request) {
+  const hint = request.headers.get("x-lifespace-mcp-scope-ceiling");
+  return hint === "resources:read resources:write"
+    ? ["resources:read", "resources:write"] : ["resources:read"];
 }
 
-function authFailure(config, env, error = "invalid_token") {
+function challenge(config, request, extra = "") {
+  return "Bearer resource_metadata=\"" + config.metadata
+    + "\", scope=\"" + resourceScopes(request).join(" ") + "\"" + extra;
+}
+
+function authFailure(config, request, error = "invalid_token") {
   return json({ error: "OAuth authorization required" }, 401, {
-    "www-authenticate": challenge(config, env, ", error=\"" + error + "\""),
+    "www-authenticate": challenge(config, request, ", error=\"" + error + "\""),
   });
 }
 
-function insufficientScope(config, env) {
+function insufficientScope(config, request) {
   return json({ error: "insufficient_scope" }, 403, {
-    "www-authenticate": challenge(config, env, ", error=\"insufficient_scope\""),
+    "www-authenticate": challenge(config, request, ", error=\"insufficient_scope\""),
   });
 }
 
@@ -390,7 +395,7 @@ export async function handleIdentityOAuthMcp(request, env) {
     return json({
       resource: config.resource,
       authorization_servers: [config.issuer],
-      scopes_supported: ["resources:read", ...(env.ENVIRONMENT === "staging" ? ["resources:write"] : [])],
+      scopes_supported: resourceScopes(request),
       bearer_methods_supported: ["header"],
     }, 200, { "cache-control": "public, max-age=300" });
   }
@@ -400,8 +405,8 @@ export async function handleIdentityOAuthMcp(request, env) {
 
   const authorized = await verifyOAuthToken(request, config, env);
   if (authorized.error === "resource_unavailable") return json({ error: "Resource authentication unavailable" }, 503);
-  if (authorized.error === "insufficient_scope") return insufficientScope(config, env);
-  if (authorized.error) return authFailure(config, env);
+  if (authorized.error === "insufficient_scope") return insufficientScope(config, request);
+  if (authorized.error) return authFailure(config, request);
 
   if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
     return json({ error: "Expected application/json" }, 415);
@@ -453,7 +458,7 @@ export async function handleIdentityOAuthMcp(request, env) {
   if (execution.error) return json({ error: execution.error }, 503);
 
   const current = await currentToolProjection(env, execution.token, authorized.context.spaceId,
-    env.ENVIRONMENT === "staging" && authorized.context.scopes.includes("resources:write"));
+    authorized.context.scopes.includes("resources:write"));
   if (current.error) return json({ error: current.error }, 503);
   if (message.method === "tools/list") {
     if (message.params && (typeof message.params !== "object" || Array.isArray(message.params)
