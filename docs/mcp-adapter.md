@@ -126,6 +126,28 @@ repository contains only synthetic hostnames and no live infrastructure secrets.
 
 The MCP Resource transport supports both `2026-07-28` stateless per-request metadata and `2025-11-25` legacy handshake. Modern `server/discover`, `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name` validation, HeaderMismatch and UnsupportedProtocolVersion errors are tested using synthetic requests. Neither protocol version changes LifeSpace Principal/Actor/Delegation: current read-only Agent Direct authority continues to be verified by Core. Protocol interoperability in live ChatGPT/Claude clients and Identity client registration are still pending Staging acceptance. 
 
+## Staging OAuth write-consent discovery / Staging 写入授权发起
+
+MCP clients select OAuth scopes from the initial `WWW-Authenticate` challenge
+when it includes a `scope` parameter. Merely listing
+`resources:write` under RFC 9728 `scopes_supported` does not cause a
+client such as ChatGPT to request write access when the challenge explicitly
+only asks for `resources:read`.
+
+For **Staging only**, the initial challenge therefore advertises
+`scope="resources:read resources:write"` to exercise the reviewed Native
+CRUD path with explicit human OAuth Consent. For **Production**, the challenge
+remains `scope="resources:read"`. Existing read-only authorizations are not
+silently upgraded. Core still restricts execution by current authorization,
+Agent Grants, Application Model Access, exact selected MCP Server operation,
+Model Policy and record version.
+
+This is a Staging acceptance profile, not a mandate that all production
+consumers should request write access. Any future production write enablement
+must adopt a least-privilege per-Resource/tool policy and separate release gate.
+A fresh client authorization is required after a challenge change; refreshing
+tool discovery alone cannot expand a previously issued read-only OAuth token.
+
 ## Staging Native write candidate / Staging 原生模型写入候选
 
 This development slice adds `lifespace.create.<model>`, `lifespace.update.<model>`
