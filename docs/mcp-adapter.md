@@ -126,27 +126,33 @@ repository contains only synthetic hostnames and no live infrastructure secrets.
 
 The MCP Resource transport supports both `2026-07-28` stateless per-request metadata and `2025-11-25` legacy handshake. Modern `server/discover`, `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name` validation, HeaderMismatch and UnsupportedProtocolVersion errors are tested using synthetic requests. Neither protocol version changes LifeSpace Principal/Actor/Delegation: current read-only Agent Direct authority continues to be verified by Core. Protocol interoperability in live ChatGPT/Claude clients and Identity client registration are still pending Staging acceptance. 
 
-## Staging OAuth write-consent discovery / Staging 写入授权发起
+## Production-governed OAuth Scope discovery / 正式 OAuth 权限申请
 
-MCP clients select OAuth scopes from the initial `WWW-Authenticate` challenge
-when it includes a `scope` parameter. Merely listing
-`resources:write` under RFC 9728 `scopes_supported` does not cause a
-client such as ChatGPT to request write access when the challenge explicitly
-only asks for `resources:read`.
+The selected **current enabled Core MCP Server** owns the Resource-level
+capability ceiling. Core reads its currently configured operations and privately
+overwrites the adapter-bound `x-lifespace-mcp-scope-ceiling` header. This
+advisory metadata drives RFC 9728 `scopes_supported` and the initial
+`WWW-Authenticate` Scope. The private Adapter defaults to **read only**
+when the header is missing/invalid; it does not infer scopes from Staging versus
+Production. The public client cannot create Authority by supplying this header.
 
-For **Staging only**, the initial challenge therefore advertises
-`scope="resources:read resources:write"` to exercise the reviewed Native
-CRUD path with explicit human OAuth Consent. For **Production**, the challenge
-remains `scope="resources:read"`. Existing read-only authorizations are not
-silently upgraded. Core still restricts execution by current authorization,
-Agent Grants, Application Model Access, exact selected MCP Server operation,
-Model Policy and record version.
+At `/oauth/authorize` and human confirmation, Identity independently
+revalidates the exact currently enabled Core MCP Resource's allowed scopes.
+The Client's actual requested Scope is an upper bound (never expanded);
+Identity mints no write execution authority without both the active consent
+and live OAuth Access Token. Core always intersects authorized credentials,
+Application × Model Access, Agent Data Grant, exact Server operation, Policy
+and optimistic concurrency, in **every environment**.
 
-This is a Staging acceptance profile, not a mandate that all production
-consumers should request write access. Any future production write enablement
-must adopt a least-privilege per-Resource/tool policy and separate release gate.
-A fresh client authorization is required after a challenge change; refreshing
-tool discovery alone cannot expand a previously issued read-only OAuth token.
+This enables the same code to be production-ready without deploying any
+public Production OAuth MCP service binding or silently broadening the
+existing read-only authorizations. Production provisioning and live E2E need
+separate owner-reviewed release gates. Currently implemented Native MCP
+operations are Query and Create/Update/Delete; `get`, Actions, Person
+Directory and External Model tool coverage still require separate implementation
+before the full configured Server surface is considered production complete.
+User Delegation remains an independent, explicitly consented `arq_*` →
+`dlg_*` flow and is not provided by broad OAuth Scope.
 
 ## Staging Native write candidate / Staging 原生模型写入候选
 
