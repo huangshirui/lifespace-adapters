@@ -13,7 +13,7 @@ const config = {
   accessToken, refreshToken,
   mode: "authorization", confirmation: "REVOKE_DEDICATED_STAGING_OAUTH",
 };
-function mockTransport({ initialStatus = 200, wrongIssuer = false } = {}) {
+function mockTransport({ initialStatus = 200, wrongIssuer = false, revocationToken = refreshToken } = {}) {
   let active = true;
   const calls = [];
   return {
@@ -28,7 +28,7 @@ function mockTransport({ initialStatus = 200, wrongIssuer = false } = {}) {
       }
       if (path === "/oauth/revoke") {
         const body = new URLSearchParams(init.body);
-        assert.equal(body.get("token"), config.refreshToken);
+        assert.equal(body.get("token"), revocationToken);
         assert.equal(body.get("client_id"), config.clientId);
         active = false;
         return new Response(null, { status: 200 });
@@ -92,18 +92,12 @@ test("does not revoke test authorization when metadata or initial permission che
 });
 
 test("access-token mode revokes only the single dedicated access token", async () => {
-  const mock = mockTransport();
-  const adapted = async (url, init) => {
-    if (new URL(url).pathname === "/oauth/revoke") {
-      const params = new URLSearchParams(init.body);
-      assert.equal(params.get("token"), accessToken);
-      return new Response(null, { status: 200 });
-    }
-    return mock.fetch(url, init);
-  };
-  // Verify URL + token shape and the fixed one-token revoke mode; the
-  // authorization-mode scenario above covers end-to-end denial behavior.
-  const checked = checkSmokeConfig({ ...config, mode: "access-token", refreshToken: undefined });
-  assert.equal(checked.revokeToken, accessToken);
-  assert.equal(checked.mode, "access-token");
+  const mock = mockTransport({ revocationToken: accessToken });
+  const result = await verifyStagingOAuthRevocation({
+    ...config, mode: "access-token", refreshToken: undefined,
+  }, mock.fetch);
+  assert.deepEqual(result, {
+    baselineHttp: 200, revokeHttp: 200, afterRevokeHttp: 401,
+    cachedTools: 1, mode: "access-token", passed: true,
+  });
 });
