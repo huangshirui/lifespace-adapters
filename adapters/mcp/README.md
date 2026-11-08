@@ -89,3 +89,15 @@ Reference: https://modelcontextprotocol.io/specification/2026-07-28/basic/transp
 - A passing smoke run proves immediate denial of the old token, not full user-facing Account authorization management. That remains LifeSpace #481. The read-only MCP Adapter does not provide write tools: staged governed mutation work is tracked in LifeSpace #493.
 
 All documentation examples must remain synthetic; no live resource URL, token file, test identity or user records belong in this public repository.
+
+### Browser PKCE end-to-end without copying tokens / 浏览器交互式授权验收
+
+For a complete **real Staging** OAuth test without manually exporting any token, use `scripts/verify-staging-oauth-pkce.mjs` locally with Node.js 22+:
+
+1. Ensure the Staging Authorization Server advertises guarded DCR, and the active Staging MCP Server has an authorized **synthetic Agent + one readable test Model**. The test never requests write access.
+2. Set `MCP_STAGING_RESOURCE_URI` to your exact enabled HTTPS `/mcp/mcp_*` Resource, `MCP_STAGING_OAUTH_ISSUER` to the corresponding Staging issuer origin, and `MCP_STAGING_REVOKE_CONFIRM=REVOKE_DEDICATED_STAGING_OAUTH`. Do not place these environment-specific values in the public repository.
+3. Run `node adapters/mcp/scripts/verify-staging-oauth-pkce.mjs`. It starts an **ephemeral 127.0.0.1-only** OAuth callback listener and DCR-registers one disposable public PKCE Client with that exact loopback URI. Open the authorization URL shown in your terminal, sign in to the existing Cloudflare Access-backed Account Consent screen and select the **test** Application/Space/Agent. The browser returns only an Authorization Code to local loopback; the script verifies state, issuer and PKCE and never prints credentials.
+4. It performs MCP `tools/list`, revokes the disposable Authorization through its Refresh Token, confirms the **same Access Token** immediately receives HTTP 401 and the revoked Refresh Token receives HTTP 400 on replay. Only success flags, counts and HTTP statuses are printed.
+5. The temporary DCR Client registration remains in Staging after testing; review/disable it later through the normal Console client governance. OAuth Authorization is revoked; your existing ChatGPT connection and its tokens are untouched. No D1 mutation, production endpoint, user-record write or elevated User Delegation is used.
+
+If DCR is not enabled, the script **stops before registration**. If Consent is denied or expires, no OAuth token is issued; the pending request expires. A local browser is required; this is not a noninteractive GitHub Actions job. The test confirms read-only OAuth consent and revocation, **not** functioning MCP record mutation (LifeSpace #493).
