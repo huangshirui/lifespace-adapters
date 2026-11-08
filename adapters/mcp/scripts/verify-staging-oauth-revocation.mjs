@@ -45,7 +45,7 @@ export function checkSmokeConfig(input) {
 }
 
 async function request(fetchImpl, url, init) {
-  try { return await fetchImpl(url, { ...init, signal: AbortSignal.timeout(12000) }); }
+  try { return await fetchImpl(url, { ...init, redirect: "manual", signal: AbortSignal.timeout(12000) }); }
   catch { fail("network request unavailable"); }
 }
 function toolRequest(token, method) {
