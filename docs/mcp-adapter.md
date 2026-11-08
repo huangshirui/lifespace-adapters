@@ -1,5 +1,17 @@
 # MCP Adapter（MCP 协议适配器）
 
+## 2026-11-08 · Third-party Agent Delegation confirmation (under acceptance)
+
+The OAuth MCP Resource Server has three additional **opt-in-gated** tools:
+- `lifespace.request_user_delegation` — requests one exact current Native Model operation on behalf of the OAuth consenting User; receives a LifeSpace Account URL for the User to open and explicitly approve/deny. No authority is returned on creation.
+- `lifespace.user_delegation_status` — polls the current pending/approved/denied/expired `arq_*` state; returns a `dlg_*` selector only after Account approval.
+- `lifespace.execute_user_delegation` — requires that precise approved `dlg_*`, exact model operation and canonical Core payload; Resource Server asks Identity for a short-lived represented User/Agent JWT and passes the ID as an explicit Core selector. The adapter **does not** treat the URL or Delegation ID as bearer auth.
+
+The web approval step is owned by LifeSpace Account and authenticated independently of the third-party Agent; existing in-app/self-built Agent confirmation and trusted WeCom Router chat confirmation are unchanged. OAuth consent read/write and `allow_user_authorization` are not equivalent to Delegation. The authoritative Principal/Actor/Delegation checks, successful-change atomic single-use consumption and audit all remain in Core.
+
+The new URL/Approval/Execution path is **not production-deployed or real Staging E2E accepted**; the adapter candidate must be deployed only after its paired reviewed LifeSpace Core/Identity/Account candidate, with precise Scope and private Service Bindings. See private platform release record. Historical Staging-only sections below describe development evolution, not current environment-specific authority.
+
+
 ## Source of truth / 事实来源
 
 LifeSpace owns global Identity, OAuth authorization, Space, Membership, Data Grant, Agent/Delegation, Application × Model Access, Model Policy, and current effective authority. This repository only adapts **verified LifeSpace contracts** into MCP transport and tool schemas.
