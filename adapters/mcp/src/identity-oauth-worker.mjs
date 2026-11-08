@@ -172,7 +172,7 @@ async function verifyOAuthToken(request, config, env) {
   return validateIntrospection(payload, config);
 }
 
-async function coreExecution(authorized, request, config, env) {
+async function coreExecution(authorized, request, config, env, delegationId = null) {
   if (!env?.CORE || typeof env.CORE.fetch !== "function"
     || !env?.IDENTITY || typeof env.IDENTITY.fetch !== "function") {
     return { error: "CORE_EXECUTION_NOT_CONFIGURED" };
@@ -189,7 +189,8 @@ async function coreExecution(authorized, request, config, env) {
         "content-type": "application/json",
         "x-lifespace-resource-secret": secret,
       },
-      body: JSON.stringify({ token, resource: config.resource }),
+      body: JSON.stringify({ token, resource: config.resource,
+        ...(delegationId ? { delegationId } : {}) }),
     });
   } catch { return { error: "IDENTITY_EXECUTION_UNAVAILABLE" }; }
   if (response.status !== 200) return { error: "IDENTITY_EXECUTION_DENIED" };
@@ -210,11 +211,14 @@ async function coreExecution(authorized, request, config, env) {
   return { token: data.accessToken };
 }
 
-async function coreJson(env, coreToken, path, method = "GET", body) {
+async function coreJson(env, coreToken, path, method = "GET", body, delegationId = null) {
   const recordGet = method === "GET" && /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records\/rec_[A-Za-z0-9_-]+$/u.test(path);
   const mutationPath = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records(?:\/rec_[A-Za-z0-9_-]+)?$/u.test(path)
     && (method === "POST" && path.endsWith("/records") || ["PATCH", "DELETE"].includes(method) && !path.endsWith("/records"));
-  if (!recordGet && !mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
+  const oauthRequest = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/oauth-delegation-requests(?:\/arq_[a-f0-9]{32})?$/u.test(path)
+    && (method === "POST" && path.endsWith("/oauth-delegation-requests")
+      || method === "GET" && /\/arq_[a-f0-9]{32}$/u.test(path));
+  if (!oauthRequest && !recordGet && !mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
     return { error: "CORE_PATH_REJECTED" };
   }
   let response;
@@ -222,6 +226,7 @@ async function coreJson(env, coreToken, path, method = "GET", body) {
     response = await env.CORE.fetch("https://core.internal" + path, {
       method, headers: {
         authorization: "Bearer " + coreToken,
+        ...(delegationId ? { "x-lifespace-delegation-id": delegationId } : {}),
         accept: "application/json",
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
@@ -320,6 +325,72 @@ async function currentToolProjection(env, coreToken, selectedSpace, allowMutatio
     }
     return { projected };
   } catch { return { error: "CORE_DISCOVERY_UNAVAILABLE" }; }
+}
+
+
+// This is a UI protocol transport, never a Delegation authority. The user
+// approves only on the independent LifeSpace Account website.
+const DELEGATION_MODEL = /^[a-z][a-z0-9_]{1,62}$/u;
+const DELEGATION_ID = /^dlg_[A-Za-z0-9_-]+$/u;
+const REQUEST_ID = /^arq_[a-f0-9]{32}$/u;
+const DELEGATED_OPS = ["get", "query", "create", "update", "delete"];
+function userDelegationTools() {
+  return [
+    { name: "lifespace.request_user_delegation",
+      title: "Request LifeSpace User Delegation",
+      description: "Ask the signed-in user to approve one specific Agent operation. Returns a LifeSpace Account confirmation URL; no authority is granted until approval.",
+      inputSchema: {type:"object",additionalProperties:false,required:["modelKey","operation","reason"],
+        properties:{
+          modelKey:{type:"string",pattern:"^[a-z][a-z0-9_]{1,62}$"},
+          operation:{type:"string",enum:DELEGATED_OPS},
+          reason:{type:"string",minLength:4,maxLength:250},
+        }},
+    },
+    { name: "lifespace.user_delegation_status",
+      title: "Check LifeSpace Delegation Approval",
+      description: "Check the current status of an explicit User Delegation request, then retrieve the Core-issued delegationId when approved.",
+      inputSchema:{type:"object",additionalProperties:false,required:["requestId"],
+        properties:{requestId:{type:"string",pattern:"^arq_[a-f0-9]{32}$"}}},
+    },
+    { name: "lifespace.execute_user_delegation",
+      title: "Execute One Approved LifeSpace User Delegation",
+      description: "Use an approved, bounded, single-use LifeSpace Delegation for its exact model operation. LifeSpace Core rechecks the current User authority and records Principal=User / Actor=Agent.",
+      annotations:{readOnlyHint:false,destructiveHint:true,idempotentHint:false,openWorldHint:false},
+      inputSchema:{type:"object",additionalProperties:false,required:["delegationId","modelKey","operation"],
+        properties:{
+          delegationId:{type:"string",pattern:"^dlg_[A-Za-z0-9_-]+$"},
+          modelKey:{type:"string",pattern:"^[a-z][a-z0-9_]{1,62}$"},
+          operation:{type:"string",enum:DELEGATED_OPS},
+          recordId:{type:"string",pattern:"^rec_[A-Za-z0-9_-]+$"},
+          data:{type:"object",description:"Canonical model payload validated by LifeSpace Core."},
+        }},
+    },
+  ];
+}
+function delegatedCoreOperation(spaceId, args) {
+  if (!args || typeof args !== "object" || Array.isArray(args)
+    || Object.keys(args).some(k => !["delegationId","modelKey","operation","recordId","data"].includes(k))
+    || !DELEGATION_ID.test(args.delegationId||"") || !DELEGATION_MODEL.test(args.modelKey||"")
+    || !DELEGATED_OPS.includes(args.operation)) return null;
+  const base="/api/v1/spaces/" + encodeURIComponent(spaceId)
+    + "/models/" + encodeURIComponent(args.modelKey) + "/records";
+  const id=args.recordId;
+  if (args.operation === "get") {
+    if (!/^rec_[A-Za-z0-9_-]+$/u.test(id||"") || args.data!==undefined) return null;
+    return {method:"GET",path:base+"/"+encodeURIComponent(id)};
+  }
+  if (args.operation === "query") {
+    if (id!==undefined || !args.data || typeof args.data!=="object" || Array.isArray(args.data)) return null;
+    return {method:"POST",path:base+"/query",body:args.data};
+  }
+  if (args.operation === "create") {
+    if (id!==undefined || !args.data || typeof args.data!=="object" || Array.isArray(args.data)) return null;
+    return {method:"POST",path:base,body:args.data};
+  }
+  if (!/^rec_[A-Za-z0-9_-]+$/u.test(id||"") || !args.data
+    || typeof args.data!=="object" || Array.isArray(args.data)) return null;
+  if (!Number.isSafeInteger(args.data.version) || args.data.version<1) return null;
+  return {method:args.operation==="update"?"PATCH":"DELETE",path:base+"/"+encodeURIComponent(id),body:args.data};
 }
 
 function validOrigin(request, config) {
@@ -474,7 +545,9 @@ export async function handleIdentityOAuthMcp(request, env) {
       || Object.keys(message.params).some(key => key !== "cursor" && !(modern && key === "_meta")) || message.params.cursor)) {
       return rpcError(message.id, -32602, "Unsupported pagination parameters");
     }
-    return rpcResult(message.id, { tools: current.projected.tools, ...(modern ? { ttlMs: 0, cacheScope: "private" } : {}) }, modern);
+    return rpcResult(message.id, { tools: [...current.projected.tools,
+      ...(authorized.context.mayRequestDelegation ? userDelegationTools() : [])],
+      ...(modern ? { ttlMs: 0, cacheScope: "private" } : {}) }, modern);
   }
 
   if (!message.params || typeof message.params !== "object" || Array.isArray(message.params)
@@ -482,6 +555,46 @@ export async function handleIdentityOAuthMcp(request, env) {
     || !message.params.arguments || typeof message.params.arguments !== "object"
     || Array.isArray(message.params.arguments)) {
     return rpcError(message.id, -32602, "Invalid tool invocation");
+  }
+  if (message.params.name.startsWith("lifespace.") && [
+      "lifespace.request_user_delegation", "lifespace.user_delegation_status",
+      "lifespace.execute_user_delegation"].includes(message.params.name)) {
+    if (!authorized.context.mayRequestDelegation)
+      return rpcError(message.id, -32602, "User Delegation is disabled for this OAuth grant");
+    const args=message.params.arguments;
+    const space=authorized.context.spaceId;
+    let path,method="GET",payload,delegation=null;
+    if (message.params.name==="lifespace.request_user_delegation") {
+      if (Object.keys(args).some(k=>!["modelKey","operation","reason"].includes(k))
+        || !DELEGATION_MODEL.test(args.modelKey||"") || !DELEGATED_OPS.includes(args.operation)
+        || typeof args.reason!=="string" || args.reason.trim().length<4 || args.reason.trim().length>250)
+        return rpcError(message.id,-32602,"Invalid User Delegation request");
+      if (["create","update","delete"].includes(args.operation)
+        && !authorized.context.scopes.includes("resources:write"))
+        return rpcError(message.id,-32602,"OAuth Client did not request write Scope");
+      path="/api/v1/spaces/"+encodeURIComponent(space)+"/oauth-delegation-requests";
+      method="POST";payload=args;
+    } else if (message.params.name==="lifespace.user_delegation_status") {
+      if (Object.keys(args).length!==1 || !REQUEST_ID.test(args.requestId||""))
+        return rpcError(message.id,-32602,"Invalid Authorization Request ID");
+      path="/api/v1/spaces/"+encodeURIComponent(space)+"/oauth-delegation-requests/"+encodeURIComponent(args.requestId);
+    } else {
+      const next=delegatedCoreOperation(space,args);
+      if (!next) return rpcError(message.id,-32602,"Invalid Delegation execution arguments");
+      if (["create","update","delete"].includes(args.operation)
+        && !authorized.context.scopes.includes("resources:write"))
+        return rpcError(message.id,-32602,"OAuth Client did not request write Scope");
+      path=next.path;method=next.method;payload=next.body;delegation=args.delegationId;
+    }
+    const coreToken=delegation
+      ? await coreExecution(authorized,request,config,env,delegation)
+      : execution;
+    if (coreToken.error) return json({error:coreToken.error},503);
+    const outcome=await coreJson(env,coreToken.token,path,method,payload,delegation);
+    return rpcResult(message.id,{
+      ...(outcome.error ? {isError:true} : {}),
+      content:[{type:"text",text: outcome.error||JSON.stringify(outcome.payload?.data??outcome.payload)}],
+    },modern);
   }
   const binding = current.projected.bindings[message.params.name];
   if (!binding) return rpcError(message.id, -32602, "Tool is not in the currently authorized projection");
