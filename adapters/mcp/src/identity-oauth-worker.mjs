@@ -271,6 +271,13 @@ const DELEGATION_MODEL = /^[a-z][a-z0-9_]{1,62}$/u;
 const DELEGATION_ID = /^dlg_[A-Za-z0-9_-]+$/u;
 const REQUEST_ID = /^arq_[a-f0-9]{32}$/u;
 const DELEGATED_OPS = ["get", "query", "create", "update", "delete"];
+const DELEGATED_ACTION = /^action:([a-z][a-z0-9_-]{0,62})$/u;
+const delegatedOp = value => typeof value === "string"
+  && (DELEGATED_OPS.includes(value) || DELEGATED_ACTION.test(value));
+const delegatedOpSchema = {oneOf:[
+  {type:"string",enum:DELEGATED_OPS},
+  {type:"string",pattern:"^action:[a-z][a-z0-9_-]{0,62}$"},
+]};
 function userDelegationTools() {
   return [
     { name: "lifespace.request_user_delegation",
@@ -279,7 +286,7 @@ function userDelegationTools() {
       inputSchema: {type:"object",additionalProperties:false,required:["modelKey","operation","reason"],
         properties:{
           modelKey:{type:"string",pattern:"^[a-z][a-z0-9_]{1,62}$"},
-          operation:{type:"string",enum:DELEGATED_OPS},
+          operation:delegatedOpSchema,
           reason:{type:"string",minLength:4,maxLength:250},
         }},
     },
@@ -291,13 +298,13 @@ function userDelegationTools() {
     },
     { name: "lifespace.execute_user_delegation",
       title: "Execute One Approved LifeSpace User Delegation",
-      description: "Use an approved, bounded, single-use LifeSpace Delegation for its exact model operation. LifeSpace Core rechecks the current User authority and records Principal=User / Actor=Agent.",
+      description: "Use a single-use Account-approved User Delegation for an exact Core-supported Model operation, including published Native Actions. Non-atomic Provider writes remain unsupported. Core checks the current User authority; Principal=User / Actor=Agent.",
       annotations:{readOnlyHint:false,destructiveHint:true,idempotentHint:false,openWorldHint:false},
       inputSchema:{type:"object",additionalProperties:false,required:["delegationId","modelKey","operation"],
         properties:{
           delegationId:{type:"string",pattern:"^dlg_[A-Za-z0-9_-]+$"},
           modelKey:{type:"string",pattern:"^[a-z][a-z0-9_]{1,62}$"},
-          operation:{type:"string",enum:DELEGATED_OPS},
+          operation:delegatedOpSchema,
           recordId:{type:"string",pattern:"^rec_[A-Za-z0-9_-]+$"},
           data:{type:"object",description:"Canonical model payload validated by LifeSpace Core."},
         }},
@@ -308,10 +315,18 @@ function delegatedCoreOperation(spaceId, args) {
   if (!args || typeof args !== "object" || Array.isArray(args)
     || Object.keys(args).some(k => !["delegationId","modelKey","operation","recordId","data"].includes(k))
     || !DELEGATION_ID.test(args.delegationId||"") || !DELEGATION_MODEL.test(args.modelKey||"")
-    || !DELEGATED_OPS.includes(args.operation)) return null;
+    || !delegatedOp(args.operation)) return null;
   const base="/api/v1/spaces/" + encodeURIComponent(spaceId)
     + "/models/" + encodeURIComponent(args.modelKey) + "/records";
   const id=args.recordId;
+  const action=DELEGATED_ACTION.exec(args.operation);
+  if (action) {
+    if (!/^rec_[A-Za-z0-9_-]+$/u.test(id||"") || !args.data
+      || typeof args.data!=="object" || Array.isArray(args.data)
+      || !Number.isSafeInteger(args.data.version) || args.data.version<1) return null;
+    return {method:"POST",path:base+"/"+encodeURIComponent(id)+"/actions/"
+      +encodeURIComponent(action[1]),body:args.data};
+  }
   if (args.operation === "get") {
     if (!/^rec_[A-Za-z0-9_-]+$/u.test(id||"") || args.data!==undefined) return null;
     return {method:"GET",path:base+"/"+encodeURIComponent(id)};
@@ -502,7 +517,7 @@ export async function handleIdentityOAuthMcp(request, env) {
     let path,method="GET",payload,delegation=null;
     if (message.params.name==="lifespace.request_user_delegation") {
       if (Object.keys(args).some(k=>!["modelKey","operation","reason"].includes(k))
-        || !DELEGATION_MODEL.test(args.modelKey||"") || !DELEGATED_OPS.includes(args.operation)
+        || !DELEGATION_MODEL.test(args.modelKey||"") || !delegatedOp(args.operation)
         || typeof args.reason!=="string" || args.reason.trim().length<4 || args.reason.trim().length>250)
         return rpcError(message.id,-32602,"Invalid User Delegation request");
       if (["create","update","delete"].includes(args.operation)
