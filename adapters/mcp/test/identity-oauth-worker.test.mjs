@@ -976,12 +976,28 @@ test("Delegation tools advertise OAuth and provide bounded write Scope step-up",
   assert.equal(f.calls.some(x=>x.path.endsWith("/oauth-delegation-requests")),false);
 });
 
-test("Production and Staging share consented write semantics; read-only/ungranted contexts stay read-only", async () => {
-  for (const patch of [{ oauthScopes: "resources:read" }, { advertisedAccess: ["read"] }]) {
-    const f = connectedFixture({ mutations: true, environment: "production", oauthScopes: "resources:read resources:write", advertisedAccess: ["read", "write"], ...patch });
-    const r = await handleIdentityOAuthMcp(rpc("tools/list"), f.env);
-    assert.deepEqual((await r.json()).result.tools.map(t => t.name), ["lifespace.query.task"]);
-  }
+test("Production and Staging advertise potentially upgradable writes but never grant them implicitly", async () => {
+  const names=["lifespace.create.task","lifespace.delete.task","lifespace.query.task","lifespace.update.task"];
+  const readOnly=connectedFixture({mutations:true,environment:"production",
+    oauthScopes:"resources:read",advertisedAccess:["read","write"]});
+  const catalog=await handleIdentityOAuthMcp(rpc("tools/list"),readOnly.env);
+  assert.equal(catalog.status,200);
+  const listedRead=(await catalog.json()).result.tools;
+  assert.deepEqual(listedRead.map(t=>t.name),names);
+  assert.deepEqual(listedRead.find(t=>t.name==="lifespace.create.task").securitySchemes,
+    [{type:"oauth2",scopes:["resources:read","resources:write"]}]);
+  const denied=await handleIdentityOAuthMcp(rpc("tools/call",{headers:{
+    "x-lifespace-mcp-scope-ceiling":"resources:read resources:write",
+  },params:{name:"lifespace.create.task",arguments:{
+    spaceId:"spc_synthetic",data:{name:"Read Scope must not mutate"},
+  }}}),readOnly.env);
+  assert.equal(denied.status,403);
+  assert.match(denied.headers.get("www-authenticate")||"",/scope="resources:read resources:write"/u);
+  assert.equal(readOnly.calls.some(c=>c.path.includes("/_operations/")&&c.path.endsWith("/invoke")),false);
+  const noGrant=connectedFixture({mutations:true,environment:"production",
+    oauthScopes:"resources:read resources:write",advertisedAccess:["read"]});
+  const withoutGrant=await handleIdentityOAuthMcp(rpc("tools/list"),noGrant.env);
+  assert.deepEqual((await withoutGrant.json()).result.tools.map(t=>t.name),["lifespace.query.task"]);
   const production = connectedFixture({ mutations: true, environment: "production", oauthScopes: "resources:read resources:write", advertisedAccess: ["read", "write"] });
   const listed = await handleIdentityOAuthMcp(rpc("tools/list"), production.env);
   assert.deepEqual((await listed.json()).result.tools.map(t => t.name), [
