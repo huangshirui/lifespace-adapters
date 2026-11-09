@@ -311,8 +311,8 @@ function userDelegationTools() {
         properties:{requestId:{type:"string",pattern:"^arq_[a-f0-9]{32}$"}}},
     },
     { name: "lifespace.execute_user_delegation",
-      title: "Execute One Approved LifeSpace User Delegation",
-      description: "Use one Account-approved User Delegation for an exact current Core operation, including Person Directory, Provider-supported External models, and published Actions. For External writes Core consumes the Delegation before the single Provider write attempt even on failure. Current User authority and Principal=User / Actor=Agent are validated by Core.",
+      title: "Execute Account-Approved LifeSpace User Delegation",
+      description: "Execute an exact Core model operation under a Delegation independently approved by the signed-in LifeSpace Account User. Account selects one-use, bounded time-limited repeat, or until-revoked lifetime; the Agent cannot choose or widen it. Native/Person and Provider-backed External operations stay restricted by current OAuth, User/Agent, Space, Model and policy authority; Core rejects revoked, expired, used, or cross-operation Delegations. External one-use write authority is consumed before the single Provider attempt, including on failure; repeated grants permit independently authorized attempts without exactly-once guarantees.",
       annotations:{readOnlyHint:false,destructiveHint:true,idempotentHint:false,openWorldHint:false},
       inputSchema:{type:"object",additionalProperties:false,required:["delegationId","modelKey","operation"],
         properties:{
