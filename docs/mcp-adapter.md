@@ -1,4 +1,14 @@
 # MCP Adapter（MCP 协议适配器）
+## 2026-11-09 · Person third-party Account-link Delegation / Person 网页授权（待 CI 验收）
+
+The public Person directory appears as `modelKey:person`, with the same public `lifespace.request_user_delegation`, `lifespace.user_delegation_status`, `lifespace.execute_user_delegation` flow as Native, bounded by the currently enabled MCP Server `person_directory` operation subset and independent Core Person Grant. The Adapter only handles the explicitly documented Kernel Person route transport: `query` maps to `GET /people?q=&limit=&cursor=`; `get/create/update/delete` map to the corresponding `/people[/per_*]` routes. It does not issue a broader Space Delegation, validate Person/linked-User business rules, or determine which Person operations are authorized.
+
+Core owns the signed represented User/Agent, Account-approved narrow `model:person_directory` Delegation, live user grant and single-use Person Change. A Person `per_*` is a business Record reference, not a `rec_*` Native record or a LifeSpace User identity.
+
+General Core supports single-use, time-bounded recurring, and long-lived revocable Delegations, but the untrusted third-party Account confirmation flow **currently offers one use only**. n8n-as-framework does not imply a trusted application; existing ALOHA/verified WeCom trusted confirmation UX is unchanged.
+
+**Status:** paired candidate source only; no deployment and no real third-party browser E2E proven.
+
 ## 2026-11-08 · Core unified operation catalog / Core 统一操作投影（Candidate）
 
 LifeSpace Core is the only owner of Model/Record/Operation semantics, including current configuration and effective authority. A third-party Agent must see the **same generic model tool family** whether Core internally resolves Native Runtime, Kernel Person Directory or a Space-bound External Provider. The MCP Adapter must not branch on `origin: external`, `person_directory`, `per_*`, Provider keys, database tables, credentials or dynamic/static storage.
