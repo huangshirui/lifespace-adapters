@@ -307,9 +307,11 @@ test("host-origin mismatch, CORS origin, query/path confusion and wrong transpor
 });
 
 
-function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false } = {}) {
+function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", introspectionOverrides = {} } = {}) {
   const calls = [];
   let tokenActive = true;
+  let currentApprovalStatus=approvalStatus;
+  let lastApprovalReason="Synthetic one-time approval";
   const signToken = ["eyJ" + "syntheticheader", "syntheticpayload", "syntheticsignature"].join(".");
   const schema = "a".repeat(64);
   const modelKeys = modelCount === 1 ? ["task"]
@@ -377,7 +379,8 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
     IDENTITY: { fetch: async (url, init) => {
       const path = new URL(url).pathname;
       calls.push({ service: "IDENTITY", path, init });
-      if (path === "/oauth/introspect") return Response.json(tokenActive ? { ...active, scope: oauthScopes, allow_user_authorization: mayDelegate } : { active: false });
+      if (path === "/oauth/introspect") return Response.json(tokenActive ? { ...active, ...introspectionOverrides,
+        scope: oauthScopes, allow_user_authorization: mayDelegate } : { active: false });
       if (path === "/oauth/execution-tokens") {
         assert.equal(init.headers["x-lifespace-resource-secret"], SECRET);
         assert.deepEqual(JSON.parse(init.body), { token: TOKEN, resource: RESOURCE, ...((JSON.parse(init.body)).delegationId ? {delegationId:"dlg_synthetic"} : {}) });
@@ -404,10 +407,19 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
           : v.modelKey==="external_synthetic" ? v.operation==="update"
           : ["create","action:complete"].includes(v.operation));
         assert.equal(typeof v.reason,"string");
+        lastApprovalReason=v.reason.trim();
         return Response.json({data:{id:"arq_"+ "f".repeat(32),status:"pending",approvalUrl:"https://account.example.test/delegation?request_id=arq_"+ "f".repeat(32)}});
       }
       if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/oauth-delegation-requests/arq_"+"f".repeat(32)) {
-        return Response.json({data:{id:"arq_"+"f".repeat(32),status:"approved",delegationId:"dlg_synthetic"}});
+        return Response.json({data:{
+          id:"arq_"+"f".repeat(32),status:currentApprovalStatus,
+          ...(currentApprovalStatus==="approved"?{delegationId:"dlg_synthetic"}:{}),
+          clientId:introspectionOverrides.client_id||active.client_id,
+          applicationId:introspectionOverrides.application_id||active.application_id,
+          agentId:introspectionOverrides.agent_id||active.agent_id,
+          spaceId:introspectionOverrides.space_id||active.space_id,
+          resource:RESOURCE,modelKey:"task",operation:"create",reason:lastApprovalReason,
+        }});
       }
       if (path === "/api/v1/spaces/spc_synthetic/_discovery/operations") {
         if (discoveryStatus !== 200)
@@ -504,7 +516,8 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       throw new Error("Unexpected Core endpoint " + path);
     } },
   };
-  return { env, calls, revokeOAuth: () => { tokenActive = false; } };
+  return { env, calls, revokeOAuth: () => { tokenActive = false; },
+    setApprovalStatus:next=>{currentApprovalStatus=next;} };
 }
 
 test("2026-07-28 stateless server/discover advertises both modern and legacy protocols", async () => {
@@ -919,6 +932,92 @@ test("External Account-approved write passes current Provider payload without Na
     && c.path.endsWith("/records/rec_external_synthetic"));
   assert.equal(actual.length,1);
   assert.equal(actual[0].init.headers["x-lifespace-delegation-id"],"dlg_synthetic");
+});
+
+test("MCP 2026 URL Elicitation MRTR resumes an Account-approved Delegation without a second request", async () => {
+  const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write",approvalStatus:"pending"});
+  const args={modelKey:"task",operation:"create",reason:" Synthetic user-approved task "};
+  const meta={"io.modelcontextprotocol/clientCapabilities":{elicitation:{url:{}}}};
+  const params={name:"lifespace.request_user_delegation",arguments:args};
+  const original=await handleIdentityOAuthMcp(modernRpc("tools/call",{meta,params}),f.env);
+  assert.equal(original.status,200);
+  const pending=(await original.json()).result;
+  assert.equal(pending.resultType,"input_required");
+  assert.match(pending.requestState,/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u);
+  assert.equal(pending.inputRequests.lifespace_account_approval.method,"elicitation/create");
+  assert.equal(pending.inputRequests.lifespace_account_approval.params.mode,"url");
+  assert.equal(pending.inputRequests.lifespace_account_approval.params.url,
+    "https://account.example.test/delegation?request_id=arq_"+"f".repeat(32));
+  const callCount=()=>f.calls.filter(x=>x.service==="CORE"&&x.path.endsWith("/oauth-delegation-requests")
+    &&x.init.method==="POST").length;
+  assert.equal(callCount(),1);
+  const reply={...params,requestState:pending.requestState,inputResponses:{
+    lifespace_account_approval:{action:"accept"},
+  }};
+  const retryEarly=await handleIdentityOAuthMcp(modernRpc("tools/call",{meta,params:reply}),f.env);
+  assert.equal((await retryEarly.json()).result.resultType,"input_required");
+  assert.equal(callCount(),1);
+  f.setApprovalStatus("approved");
+  const approved=await handleIdentityOAuthMcp(modernRpc("tools/call",{meta,params:reply}),f.env);
+  const data=(await approved.json()).result;
+  assert.equal(data.resultType,"complete");
+  assert.equal(JSON.parse(data.content[0].text).delegationId,"dlg_synthetic");
+  assert.equal(callCount(),1);
+  assert.equal(f.calls.some(x=>x.service==="CORE"&&x.path.endsWith("/records")&&x.init.method==="POST"),false);
+  // Elicitation acknowledges Account approval; it never executes a mutation
+  // or invents a Delegation, even when client echoes an 'accept' result.
+  assert.equal(f.calls.filter(x=>x.service==="CORE"&&x.path.endsWith("/oauth-delegation-requests/arq_"+"f".repeat(32))).length,2);
+});
+
+test("MCP MRTR refuses tampered, cross-context and declined URL-approval continuation", async () => {
+  const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write"});
+  const meta={"io.modelcontextprotocol/clientCapabilities":{elicitation:{url:{}}}};
+  const args={modelKey:"task",operation:"create",reason:"Synthetic bound task approval"};
+  const params={name:"lifespace.request_user_delegation",arguments:args};
+  const start=await handleIdentityOAuthMcp(modernRpc("tools/call",{meta,params}),f.env);
+  const state=(await start.json()).result.requestState;
+  async function retry(override, fixture=f) {
+    const response=await handleIdentityOAuthMcp(modernRpc("tools/call",{meta,params:{
+      ...params,requestState:state,inputResponses:{lifespace_account_approval:{action:"accept"}},
+      ...override,
+    }}),fixture.env);
+    return response.json();
+  }
+  assert.equal((await retry({requestState:state.slice(0,-1)+"A"})).error.code,-32602);
+  assert.equal((await retry({arguments:{...args,reason:"Unapproved different intent"}})).error.code,-32602);
+  const changedClient=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write",
+    introspectionOverrides:{client_id:"ocli_other_synthetic"}});
+  assert.equal((await retry({},changedClient)).error.code,-32602);
+  const changedUser=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write",
+    introspectionOverrides:{sub:"usr_other_synthetic"}});
+  assert.equal((await retry({},changedUser)).error.code,-32602);
+  const malformed=await retry({inputResponses:{lifespace_account_approval:{action:"accept",delegationId:"dlg_attacker"}}});
+  assert.equal(malformed.error.code,-32602);
+  const cancel=await retry({inputResponses:{lifespace_account_approval:{action:"cancel"}}});
+  assert.equal(cancel.result.isError,true);
+  assert.match(cancel.result.content[0].text,/no Delegation was executed/u);
+  assert.equal(f.calls.filter(x=>x.service==="CORE"&&x.init.method==="POST"
+    &&x.path.endsWith("/oauth-delegation-requests")).length,1);
+});
+
+test("URL elicitation only activates for explicit modern client URL capability; legacy and form-only keep link",async()=>{
+  const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write"});
+  const params={name:"lifespace.request_user_delegation",
+    arguments:{modelKey:"task",operation:"create",reason:"Synthetic backward compatible approval"}};
+  for(const request of [
+    rpc("tools/call",{params}),
+    modernRpc("tools/call",{params}),
+    modernRpc("tools/call",{params,meta:{"io.modelcontextprotocol/clientCapabilities":{elicitation:{form:{}}}}}),
+  ]){
+    const response=await handleIdentityOAuthMcp(request,f.env);
+    const result=(await response.json()).result;
+    assert.equal(result.resultType==="input_required",false);
+    assert.match(result.content[0].text,/approvalUrl/u);
+  }
+  const rejected=await handleIdentityOAuthMcp(modernRpc("tools/call",{
+    params:{...params,requestState:"fake-token"},
+  }),f.env);
+  assert.equal((await rejected.json()).error.code,-32602);
 });
 
 test("third-party OAuth Delegation unavailable when opt-in disabled or write Scope absent", async () => {
