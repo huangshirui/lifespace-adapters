@@ -385,7 +385,7 @@ function approvalInputRequired(id,state,pending,modern) {
 function delegationStatusMatches(payload,requestId,args,auth,config) {
   const c=auth.context;
   return payload?.id===requestId && payload.modelKey===args.modelKey
-    && payload.operation===args.operation && payload.reason===args.reason
+    && payload.operation===args.operation && payload.reason===args.reason.trim()
     && payload.applicationId===c.applicationId && payload.agentId===c.agentId
     && payload.spaceId===c.spaceId && payload.clientId===c.clientId
     && payload.resource===config.resource
