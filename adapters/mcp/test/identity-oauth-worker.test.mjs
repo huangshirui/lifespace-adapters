@@ -934,6 +934,92 @@ test("External Account-approved write passes current Provider payload without Na
   assert.equal(actual[0].init.headers["x-lifespace-delegation-id"],"dlg_synthetic");
 });
 
+test("MCP 2026 URL Elicitation MRTR resumes an Account-approved Delegation without a second request", async () => {
+  const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write",approvalStatus:"pending"});
+  const args={modelKey:"task",operation:"create",reason:"Synthetic user-approved task"};
+  const meta={"io.modelcontextprotocol/clientCapabilities":{elicitation:{url:{}}}};
+  const params={name:"lifespace.request_user_delegation",arguments:args};
+  const original=await handleIdentityOAuthMcp(modernRpc("tools/call",{meta,params}),f.env);
+  assert.equal(original.status,200);
+  const pending=(await original.json()).result;
+  assert.equal(pending.resultType,"input_required");
+  assert.match(pending.requestState,/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u);
+  assert.equal(pending.inputRequests.lifespace_account_approval.method,"elicitation/create");
+  assert.equal(pending.inputRequests.lifespace_account_approval.params.mode,"url");
+  assert.equal(pending.inputRequests.lifespace_account_approval.params.url,
+    "https://account.example.test/delegation?request_id=arq_"+"f".repeat(32));
+  const callCount=()=>f.calls.filter(x=>x.service==="CORE"&&x.path.endsWith("/oauth-delegation-requests")
+    &&x.init.method==="POST").length;
+  assert.equal(callCount(),1);
+  const reply={...params,requestState:pending.requestState,inputResponses:{
+    lifespace_account_approval:{action:"accept"},
+  }};
+  const retryEarly=await handleIdentityOAuthMcp(modernRpc("tools/call",{meta,params:reply}),f.env);
+  assert.equal((await retryEarly.json()).result.resultType,"input_required");
+  assert.equal(callCount(),1);
+  f.setApprovalStatus("approved");
+  const approved=await handleIdentityOAuthMcp(modernRpc("tools/call",{meta,params:reply}),f.env);
+  const data=(await approved.json()).result;
+  assert.equal(data.resultType,"complete");
+  assert.equal(JSON.parse(data.content[0].text).delegationId,"dlg_synthetic");
+  assert.equal(callCount(),1);
+  assert.equal(f.calls.some(x=>x.service==="CORE"&&x.path.endsWith("/records")&&x.init.method==="POST"),false);
+  // Elicitation acknowledges Account approval; it never executes a mutation
+  // or invents a Delegation, even when client echoes an 'accept' result.
+  assert.equal(f.calls.filter(x=>x.service==="CORE"&&x.path.endsWith("/oauth-delegation-requests/arq_"+"f".repeat(32))).length,2);
+});
+
+test("MCP MRTR refuses tampered, cross-context and declined URL-approval continuation", async () => {
+  const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write"});
+  const meta={"io.modelcontextprotocol/clientCapabilities":{elicitation:{url:{}}}};
+  const args={modelKey:"task",operation:"create",reason:"Synthetic bound task approval"};
+  const params={name:"lifespace.request_user_delegation",arguments:args};
+  const start=await handleIdentityOAuthMcp(modernRpc("tools/call",{meta,params}),f.env);
+  const state=(await start.json()).result.requestState;
+  async function retry(override, fixture=f) {
+    const response=await handleIdentityOAuthMcp(modernRpc("tools/call",{meta,params:{
+      ...params,requestState:state,inputResponses:{lifespace_account_approval:{action:"accept"}},
+      ...override,
+    }}),fixture.env);
+    return response.json();
+  }
+  assert.equal((await retry({requestState:state.slice(0,-1)+"A"})).error.code,-32602);
+  assert.equal((await retry({arguments:{...args,reason:"Unapproved different intent"}})).error.code,-32602);
+  const changedClient=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write",
+    introspectionOverrides:{client_id:"ocli_other_synthetic"}});
+  assert.equal((await retry({},changedClient)).error.code,-32602);
+  const changedUser=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write",
+    introspectionOverrides:{sub:"usr_other_synthetic"}});
+  assert.equal((await retry({},changedUser)).error.code,-32602);
+  const malformed=await retry({inputResponses:{lifespace_account_approval:{action:"accept",delegationId:"dlg_attacker"}}});
+  assert.equal(malformed.error.code,-32602);
+  const cancel=await retry({inputResponses:{lifespace_account_approval:{action:"cancel"}}});
+  assert.equal(cancel.result.isError,true);
+  assert.match(cancel.result.content[0].text,/no Delegation was executed/u);
+  assert.equal(f.calls.filter(x=>x.service==="CORE"&&x.init.method==="POST"
+    &&x.path.endsWith("/oauth-delegation-requests")).length,1);
+});
+
+test("URL elicitation only activates for explicit modern client URL capability; legacy and form-only keep link",async()=>{
+  const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write"});
+  const params={name:"lifespace.request_user_delegation",
+    arguments:{modelKey:"task",operation:"create",reason:"Synthetic backward compatible approval"}};
+  for(const request of [
+    rpc("tools/call",{params}),
+    modernRpc("tools/call",{params}),
+    modernRpc("tools/call",{params,meta:{"io.modelcontextprotocol/clientCapabilities":{elicitation:{form:{}}}}}),
+  ]){
+    const response=await handleIdentityOAuthMcp(request,f.env);
+    const result=(await response.json()).result;
+    assert.equal(result.resultType==="input_required",false);
+    assert.match(result.content[0].text,/approvalUrl/u);
+  }
+  const rejected=await handleIdentityOAuthMcp(modernRpc("tools/call",{
+    params:{...params,requestState:"fake-token"},
+  }),f.env);
+  assert.equal((await rejected.json()).error.code,-32602);
+});
+
 test("third-party OAuth Delegation unavailable when opt-in disabled or write Scope absent", async () => {
   const disabled=connectedFixture({mayDelegate:false,oauthScopes:"resources:read resources:write"});
   const list=await handleIdentityOAuthMcp(rpc("tools/list"),disabled.env);
