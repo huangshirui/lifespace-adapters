@@ -1,3 +1,9 @@
+## 2026-11-09 · Account-selected third-party Delegation lifetimes (pending Core #505)
+
+The new Account second-stage approval UI is an **independent human authority decision**, not a parameter the MCP Agent can supply. With [LifeSpace Core/Account PR #505](https://github.com/huangshirui/LifeSpace/pull/505), an approved exact `modelKey + operation` Delegation may be once (default, 30 minutes), bounded repeated use (1h / 24h / 7d), or indefinite until the User revokes it. Core alone applies the lifetime, current OAuth/Space/Model/Policy and revocation. The Adapter reuses the same `request_user_delegation` → `user_delegation_status` → `execute_user_delegation` transport, with no new lifetime fields exposed to or accepted from the third-party client. One-use External Provider writes still consume the one attempt before Provider I/O. The Account `/delegations` page provides user-owned revocation.
+
+**State:** paired documentation semantics only; Core #505 and this Adapter companion must pass CI, be merged, and receive staging deployment/real E2E before any claim of third-party availability. Older one-use-only notes below are historical.
+
 # MCP Adapter（MCP 协议适配器）
 ## 2026-11-09 · Person third-party Account-link Delegation / Person 网页授权（待 CI 验收）
 
