@@ -407,7 +407,7 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
           : v.modelKey==="external_synthetic" ? v.operation==="update"
           : ["create","action:complete"].includes(v.operation));
         assert.equal(typeof v.reason,"string");
-        lastApprovalReason=v.reason;
+        lastApprovalReason=v.reason.trim();
         return Response.json({data:{id:"arq_"+ "f".repeat(32),status:"pending",approvalUrl:"https://account.example.test/delegation?request_id=arq_"+ "f".repeat(32)}});
       }
       if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/oauth-delegation-requests/arq_"+"f".repeat(32)) {
@@ -936,7 +936,7 @@ test("External Account-approved write passes current Provider payload without Na
 
 test("MCP 2026 URL Elicitation MRTR resumes an Account-approved Delegation without a second request", async () => {
   const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write",approvalStatus:"pending"});
-  const args={modelKey:"task",operation:"create",reason:"Synthetic user-approved task"};
+  const args={modelKey:"task",operation:"create",reason:" Synthetic user-approved task "};
   const meta={"io.modelcontextprotocol/clientCapabilities":{elicitation:{url:{}}}};
   const params={name:"lifespace.request_user_delegation",arguments:args};
   const original=await handleIdentityOAuthMcp(modernRpc("tools/call",{meta,params}),f.env);
