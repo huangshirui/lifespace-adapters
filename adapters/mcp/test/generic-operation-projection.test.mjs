@@ -5,6 +5,7 @@ const spaceId="spc_synthetic";
 function operation(modelKey,operation,ordinal){
   return {modelKey,operation,operationRef:"op_"+ordinal.toString(16).padStart(64,"a"),
     display:modelKey,title:operation+" "+modelKey,description:"Core current permitted operation",
+    requiredScopes:["query","get"].includes(operation)?["resources:read"]:["resources:read","resources:write"],
     inputSchema:{type:"object",additionalProperties:false,
       properties:{spaceId:{type:"string",enum:[spaceId]},
         recordId:{type:"string",minLength:1},data:{type:"object"}},
@@ -34,7 +35,7 @@ test("one uniform tool contract for Kernel Person, dynamic External, Native and 
     assert.equal(tool.annotations.readOnlyHint,read,tool.name);
   }
   for(const [name,binding] of Object.entries(result.bindings)){
-    assert.deepEqual(Object.keys(binding).sort(),["kind","operationRef","spaceId"].sort(),name);
+    assert.deepEqual(Object.keys(binding).sort(),["kind","operationRef","requiredScopes","spaceId"].sort(),name);
     const input={spaceId,data:{title:"Synthetic only"}};
     const op=buildCoreOperation(binding,input);
     assert.equal(op.method,"POST");
@@ -44,6 +45,21 @@ test("one uniform tool contract for Kernel Person, dynamic External, Native and 
     assert.ok(!JSON.stringify(binding).includes("external"));
     assert.ok(!JSON.stringify(binding).includes("provider"));
   }
+});
+test("Core dictates OAuth scope including read-only Action; forged scope data fails closed",()=>{
+  const readAction={...operation("event","action:inspect",9),requiredScopes:["resources:read"]};
+  const projected=projectCoreOperationCatalog({operations:[readAction]},spaceId);
+  const tool=projected.tools[0];
+  assert.deepEqual(tool.securitySchemes,[{type:"oauth2",scopes:["resources:read"]}]);
+  assert.equal(tool.annotations.readOnlyHint,false);
+  assert.deepEqual(projected.bindings[tool.name].requiredScopes,["resources:read"]);
+  for(const invalid of [[],["resources:write"],["resources:read","resources:manage"],
+    ["resources:read","resources:write","resources:manage"]]){
+    assert.throws(()=>projectCoreOperationCatalog({operations:[{...readAction,requiredScopes:invalid}]},spaceId));
+  }
+  assert.throws(()=>projectCoreOperationCatalog({operations:[{
+    ...operation("event","create",1),requiredScopes:["resources:read"],
+  }]},spaceId));
 });
 test("core operation projection is fail-closed for duplicate, cross-Space and forged selectors",()=>{
   const a=operation("task","query",1);
