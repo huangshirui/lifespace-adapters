@@ -219,9 +219,21 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
     && method==="GET";
   const genericCommand = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_operations\/op_[a-f0-9]{64}\/invoke$/u.test(path)
     && method==="POST";
+  // Person routes are a documented Kernel transport exception. The Agent
+  // never chooses a trusted channel; this bridge is reachable only with a
+  // signed represented User token and explicit Core Delegation selector.
+  const personUrl = new URL("https://core.internal"+path);
+  const personCollection=/^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/people$/u.test(personUrl.pathname);
+  const personRecord=/^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/people\/per_[A-Za-z0-9_-]+$/u.test(personUrl.pathname);
+  const personQuerySafe=[...personUrl.searchParams.keys()].every(k=>["q","limit","cursor"].includes(k));
+  const delegatedPerson = Boolean(delegationId) && personQuerySafe
+    && ((method==="GET" && (personCollection || personRecord))
+      || (method==="POST" && personCollection && !personUrl.search)
+      || (["PATCH","DELETE"].includes(method) && personRecord && !personUrl.search))
+    && (!personUrl.search || (method==="GET" && personCollection));
   const delegatedAction = Boolean(delegationId) && method==="POST"
     && /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records\/rec_[A-Za-z0-9_-]+\/actions\/[a-z][a-z0-9_-]{0,62}$/u.test(path);
-  if (!genericCatalog && !genericCommand && !delegatedAction && !oauthRequest && !recordGet && !mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
+  if (!genericCatalog && !genericCommand && !delegatedAction && !delegatedPerson && !oauthRequest && !recordGet && !mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
     return { error: "CORE_PATH_REJECTED" };
   }
   let response;
@@ -239,12 +251,12 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
   if (!response.ok) {
     // An invalid Canonical Query is a caller error, not a Core outage.
     // Never forward Core's raw error body: it may contain private details.
-    if ((genericCommand || delegatedAction || path.endsWith("/records/query") || mutationPath)
+    if ((genericCommand || delegatedAction || delegatedPerson || path.endsWith("/records/query") || mutationPath)
       && (response.status === 400 || response.status === 422)) {
-      return { error: (genericCommand || delegatedAction) ? "INVALID_OPERATION_ARGUMENTS"
+      return { error: (genericCommand || delegatedAction || delegatedPerson) ? "INVALID_OPERATION_ARGUMENTS"
         : mutationPath ? "INVALID_MUTATION_ARGUMENTS" : "INVALID_QUERY_ARGUMENTS" };
     }
-    if ((genericCommand || delegatedAction || mutationPath) && response.status === 409) return { error: "RECORD_VERSION_CONFLICT" };
+    if ((genericCommand || delegatedAction || delegatedPerson || mutationPath) && response.status === 409) return { error: "RECORD_VERSION_CONFLICT" };
     return { error: response.status === 401 || response.status === 403
       ? "CORE_PERMISSION_DENIED" : "CORE_UNAVAILABLE" };
   }
@@ -300,14 +312,14 @@ function userDelegationTools() {
     },
     { name: "lifespace.execute_user_delegation",
       title: "Execute One Approved LifeSpace User Delegation",
-      description: "Use a single-use Account-approved User Delegation for an exact Core-supported Model operation, including published Native Actions. Non-atomic Provider writes remain unsupported. Core checks the current User authority; Principal=User / Actor=Agent.",
+      description: "Use one Account-approved User Delegation for an exact current Core operation, including Person Directory and published Actions. Current User authority and Principal=User / Actor=Agent are validated by Core.",
       annotations:{readOnlyHint:false,destructiveHint:true,idempotentHint:false,openWorldHint:false},
       inputSchema:{type:"object",additionalProperties:false,required:["delegationId","modelKey","operation"],
         properties:{
           delegationId:{type:"string",pattern:"^dlg_[A-Za-z0-9_-]+$"},
           modelKey:{type:"string",pattern:"^[a-z][a-z0-9_]{1,62}$"},
           operation:delegatedOpSchema,
-          recordId:{type:"string",pattern:"^rec_[A-Za-z0-9_-]+$"},
+          recordId:{type:"string",pattern:"^(rec|per)_[A-Za-z0-9_-]+$"},
           data:{type:"object",description:"Canonical model payload validated by LifeSpace Core."},
         }},
     },
@@ -318,9 +330,43 @@ function delegatedCoreOperation(spaceId, args) {
     || Object.keys(args).some(k => !["delegationId","modelKey","operation","recordId","data"].includes(k))
     || !DELEGATION_ID.test(args.delegationId||"") || !DELEGATION_MODEL.test(args.modelKey||"")
     || !delegatedOp(args.operation)) return null;
+  const id=args.recordId;
+  if (args.modelKey === "person") {
+    const person="/api/v1/spaces/"+encodeURIComponent(spaceId)+"/people";
+    const isPersonId=typeof id==="string" && /^per_[A-Za-z0-9_-]+$/u.test(id);
+    const data=args.data;
+    if (args.operation==="query") {
+      if (id!==undefined || (data!==undefined && (!data||typeof data!=="object"||Array.isArray(data))))return null;
+      const query=data||{};
+      if (Object.keys(query).some(k=>!["search","limit","cursor"].includes(k)))return null;
+      const params=new URLSearchParams();
+      if (query.search!==undefined) {
+        if (typeof query.search!=="string"||!query.search.trim()||query.search.length>100)return null;
+        params.set("q",query.search);
+      }
+      if (query.limit!==undefined) {
+        if (!Number.isSafeInteger(query.limit)||query.limit<1||query.limit>100)return null;
+        params.set("limit",String(query.limit));
+      }
+      if (query.cursor!==undefined) {
+        if (typeof query.cursor!=="string"||!query.cursor||query.cursor.length>2048)return null;
+        params.set("cursor",query.cursor);
+      }
+      return {method:"GET",path:person+(params.size?"?"+params.toString():"")};
+    }
+    if (args.operation==="get")return isPersonId&&data===undefined
+      ?{method:"GET",path:person+"/"+encodeURIComponent(id)}:null;
+    if (args.operation==="create")return id===undefined&&data
+      &&typeof data==="object"&&!Array.isArray(data)
+      ?{method:"POST",path:person,body:data}:null;
+    if (!["update","delete"].includes(args.operation)||!isPersonId||!data
+      ||typeof data!=="object"||Array.isArray(data)
+      ||!Number.isSafeInteger(data.version)||data.version<1)return null;
+    return {method:args.operation==="update"?"PATCH":"DELETE",
+      path:person+"/"+encodeURIComponent(id),body:data};
+  }
   const base="/api/v1/spaces/" + encodeURIComponent(spaceId)
     + "/models/" + encodeURIComponent(args.modelKey) + "/records";
-  const id=args.recordId;
   const action=DELEGATED_ACTION.exec(args.operation);
   if (action) {
     if (!/^rec_[A-Za-z0-9_-]+$/u.test(id||"") || !args.data
