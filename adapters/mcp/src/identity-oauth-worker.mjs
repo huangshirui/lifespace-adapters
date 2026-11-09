@@ -433,9 +433,15 @@ function writeScopeStepUp(id, config, request, modern) {
   const value='Bearer resource_metadata="'+config.metadata
     +'", scope="'+required+'", error="insufficient_scope"'
     +', error_description="Reauthorize for the requested write operation"';
-  return rpcResult(id,{isError:true,
+  // RFC 6750/MCP: HTTP 403 plus WWW-Authenticate is the universal step-up
+  // signal. The MCP tool-result metadata also supports clients which inspect
+  // mcp/www_authenticate within tools/call (without making it authoritative).
+  const rpc=rpcResult(id,{isError:true,
     content:[{type:"text",text:"OAuth write Scope required; reauthorize to request it."}],
     _meta:{"mcp/www_authenticate":[value]}},modern);
+  const headers=new Headers(rpc.headers);
+  headers.set("www-authenticate",value);
+  return new Response(rpc.body,{status:403,headers});
 }
 
 function decodeMcpName(raw) {
@@ -622,6 +628,10 @@ export async function handleIdentityOAuthMcp(request, env) {
   }
   const binding = current.projected.bindings[message.params.name];
   if (!binding) return rpcError(message.id, -32602, "Tool is not in the currently authorized projection");
+  // Tool discovery can show an Agent operation requiring explicit additional
+  // OAuth Scope, but the current token never gains it by being listed.
+  if (binding.requiredScopes.some(scope=>!authorized.context.scopes.includes(scope)))
+    return writeScopeStepUp(message.id,config,request,modern);
   let operation;
   try { operation=buildCoreOperation(binding,message.params.arguments); }
   catch { return rpcError(message.id,-32602,"Invalid arguments for current Core operation"); }
