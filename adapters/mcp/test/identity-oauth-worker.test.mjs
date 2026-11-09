@@ -398,9 +398,10 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       if (denied && path.endsWith("/records/query")) return Response.json({ error: "forbidden" }, { status: 403 });
       if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/oauth-delegation-requests" && init.method === "POST") {
         const v = JSON.parse(init.body);
-        assert.ok(["task","person"].includes(v.modelKey));
+        assert.ok(["task","person","external_synthetic"].includes(v.modelKey));
         assert.ok(v.modelKey==="person"
           ? ["query","get","create","update","delete"].includes(v.operation)
+          : v.modelKey==="external_synthetic" ? v.operation==="update"
           : ["create","action:complete"].includes(v.operation));
         assert.equal(typeof v.reason,"string");
         return Response.json({data:{id:"arq_"+ "f".repeat(32),status:"pending",approvalUrl:"https://account.example.test/delegation?request_id=arq_"+ "f".repeat(32)}});
