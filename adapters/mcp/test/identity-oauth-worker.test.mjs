@@ -932,7 +932,9 @@ test("third-party OAuth Delegation unavailable when opt-in disabled or write Sco
   }}),disabled.env);
   assert.equal((await fake.json()).error.code,-32602);
   const readOnly=connectedFixture({mayDelegate:true,oauthScopes:"resources:read"});
-  const blocked=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+  const blocked=await handleIdentityOAuthMcp(rpc("tools/call",{headers:{
+    "x-lifespace-mcp-scope-ceiling":"resources:read resources:write",
+  },params:{
     name:"lifespace.request_user_delegation",arguments:{
       modelKey:"task",operation:"create",reason:"Please create one task",
     },
