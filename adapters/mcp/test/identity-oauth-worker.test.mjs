@@ -307,9 +307,11 @@ test("host-origin mismatch, CORS origin, query/path confusion and wrong transpor
 });
 
 
-function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false } = {}) {
+function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", introspectionOverrides = {} } = {}) {
   const calls = [];
   let tokenActive = true;
+  let currentApprovalStatus=approvalStatus;
+  let lastApprovalReason="Synthetic one-time approval";
   const signToken = ["eyJ" + "syntheticheader", "syntheticpayload", "syntheticsignature"].join(".");
   const schema = "a".repeat(64);
   const modelKeys = modelCount === 1 ? ["task"]
@@ -377,7 +379,8 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
     IDENTITY: { fetch: async (url, init) => {
       const path = new URL(url).pathname;
       calls.push({ service: "IDENTITY", path, init });
-      if (path === "/oauth/introspect") return Response.json(tokenActive ? { ...active, scope: oauthScopes, allow_user_authorization: mayDelegate } : { active: false });
+      if (path === "/oauth/introspect") return Response.json(tokenActive ? { ...active, ...introspectionOverrides,
+        scope: oauthScopes, allow_user_authorization: mayDelegate } : { active: false });
       if (path === "/oauth/execution-tokens") {
         assert.equal(init.headers["x-lifespace-resource-secret"], SECRET);
         assert.deepEqual(JSON.parse(init.body), { token: TOKEN, resource: RESOURCE, ...((JSON.parse(init.body)).delegationId ? {delegationId:"dlg_synthetic"} : {}) });
@@ -404,10 +407,19 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
           : v.modelKey==="external_synthetic" ? v.operation==="update"
           : ["create","action:complete"].includes(v.operation));
         assert.equal(typeof v.reason,"string");
+        lastApprovalReason=v.reason;
         return Response.json({data:{id:"arq_"+ "f".repeat(32),status:"pending",approvalUrl:"https://account.example.test/delegation?request_id=arq_"+ "f".repeat(32)}});
       }
       if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/oauth-delegation-requests/arq_"+"f".repeat(32)) {
-        return Response.json({data:{id:"arq_"+"f".repeat(32),status:"approved",delegationId:"dlg_synthetic"}});
+        return Response.json({data:{
+          id:"arq_"+"f".repeat(32),status:currentApprovalStatus,
+          ...(currentApprovalStatus==="approved"?{delegationId:"dlg_synthetic"}:{}),
+          clientId:introspectionOverrides.client_id||active.client_id,
+          applicationId:introspectionOverrides.application_id||active.application_id,
+          agentId:introspectionOverrides.agent_id||active.agent_id,
+          spaceId:introspectionOverrides.space_id||active.space_id,
+          resource:RESOURCE,modelKey:"task",operation:"create",reason:lastApprovalReason,
+        }});
       }
       if (path === "/api/v1/spaces/spc_synthetic/_discovery/operations") {
         if (discoveryStatus !== 200)
@@ -504,7 +516,8 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       throw new Error("Unexpected Core endpoint " + path);
     } },
   };
-  return { env, calls, revokeOAuth: () => { tokenActive = false; } };
+  return { env, calls, revokeOAuth: () => { tokenActive = false; },
+    setApprovalStatus:next=>{currentApprovalStatus=next;} };
 }
 
 test("2026-07-28 stateless server/discover advertises both modern and legacy protocols", async () => {
