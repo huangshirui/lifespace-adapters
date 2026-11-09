@@ -25,24 +25,30 @@ export function projectCoreOperationCatalog(payload,spaceId) {
       ||row.inputSchema.properties.spaceId.enum[0]!==spaceId
       ||!Array.isArray(row.inputSchema.required)
       ||!row.inputSchema.required.includes("spaceId")
+      ||!Array.isArray(row.requiredScopes)
+      ||(row.requiredScopes.length!==1&&row.requiredScopes.length!==2)
+      ||row.requiredScopes[0]!=="resources:read"
+      ||(row.requiredScopes.length===2&&row.requiredScopes[1]!=="resources:write")
+      ||(["query","get"].includes(row.operation)&&row.requiredScopes.length!==1)
+      ||(["create","update","delete"].includes(row.operation)&&row.requiredScopes.length!==2)
       ||refs.has(row.operationRef))throw Error("Invalid or duplicate Core operation");
     refs.add(row.operationRef);
     const action=ACTION.exec(row.operation||"");
     const name=action?"lifespace.action."+row.modelKey+"."+action[1]
       :"lifespace."+row.operation+"."+row.modelKey;
     if(!TOOL.test(name)||Object.hasOwn(projected.bindings,name))throw Error("Duplicate model operation");
-    const read=["query","get"].includes(row.operation);
-    // OAuth permissions are protocol metadata, never a substitute for Core's
-    // fresh credential Scope, Data Grant and Model Policy checks.
-    // Both forms support MCP clients using securitySchemes or legacy _meta.
-    const securitySchemes=[{type:"oauth2",scopes:read
-      ? ["resources:read"] : ["resources:read","resources:write"]}];
+    const read=row.requiredScopes.length===1;
+    // Core owns the minimum OAuth Scope per semantic operation, including
+    // read-authorized actions. Never infer authority from a storage kind or
+    // from the current token's (possibly narrower) scopes.
+    const securitySchemes=[{type:"oauth2",scopes:[...row.requiredScopes]}];
     projected.tools.push({name,title:row.title,description:row.description,
-      annotations:{readOnlyHint:read,destructiveHint:["update","delete"].includes(row.operation)
-        ||Boolean(action),idempotentHint:read,openWorldHint:false},
+      annotations:{readOnlyHint:read&&!action,destructiveHint:["update","delete"].includes(row.operation)
+        ||Boolean(action),idempotentHint:read&&!action,openWorldHint:false},
       securitySchemes,_meta:{securitySchemes:structuredClone(securitySchemes)},
       inputSchema:structuredClone(row.inputSchema)});
-    projected.bindings[name]={kind:"core-operation",spaceId,operationRef:row.operationRef};
+    projected.bindings[name]={kind:"core-operation",spaceId,
+      operationRef:row.operationRef,requiredScopes:[...row.requiredScopes]};
   }
   projected.tools.sort((a,b)=>a.name.localeCompare(b.name));
   return projected;
@@ -50,6 +56,10 @@ export function projectCoreOperationCatalog(payload,spaceId) {
 export function buildCoreOperation(binding,args){
   if(!binding||binding.kind!=="core-operation"
     ||!SPACE.test(binding.spaceId)||!OP_REF.test(binding.operationRef)
+    ||!Array.isArray(binding.requiredScopes)
+    ||binding.requiredScopes[0]!=="resources:read"
+    ||(binding.requiredScopes.length!==1
+      &&!(binding.requiredScopes.length===2&&binding.requiredScopes[1]==="resources:write"))
     ||!args||typeof args!=="object"||Array.isArray(args)
     ||args.spaceId!==binding.spaceId
     ||Object.keys(args).some(k=>!["spaceId","recordId","data"].includes(k))
