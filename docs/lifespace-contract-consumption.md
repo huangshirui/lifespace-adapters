@@ -1,3 +1,7 @@
+## 2026-11-09 · Operation prerequisite scopes / 操作权限先决条件
+
+Current Core Generic Operation Projection `apps/core/mcp-operations.openapi.yaml` Candidate 0.2.0 carries `requiredScopes` alongside an opaque operation selector and canonical input JSON Schema. MCP must project this field to per-tool OAuth `securitySchemes`, never assume all Actions require write, and never treat a discoverable write tool as proof the token may execute it. Core's own current Agent Grant and Server policy gate preview; the unmodified token and runtime policy gate execution. Missing/invalid Core descriptor scopes fail closed, rather than reverting to a shadow Adapter-local classification.
+
 # LifeSpace Contract Consumption（LifeSpace 契约消费规则）
 
 ## Purpose（目的）
