@@ -355,12 +355,12 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
   const operations = Array.isArray(mcpOperations) ? mcpOperations
     : mutations ? ["query", "create", "update", "delete"] : ["query"];
   const allowedOperations = operations.filter(op => ["query","get"].includes(op)
-    ? advertisedAccess.includes("read") : advertisedAccess.includes("write")
-      && oauthScopes.includes("resources:write"));
+    ? advertisedAccess.includes("read") : advertisedAccess.includes("write"));
   const syntheticCatalog = modelKeys.flatMap((key,index) => allowedOperations.map((op,j) => {
     const ref = "op_" + (index * 8 + j + 1).toString(16).padStart(64,"0");
     return {operationRef:ref,modelKey:key,display:"Task",operation:op,
       title:op+" Task",description:"Core current authorized operation",
+      requiredScopes:["query","get"].includes(op)?["resources:read"]:["resources:read","resources:write"],
       inputSchema:{type:"object",additionalProperties:false,
         properties:{spaceId:{type:"string",enum:[wrongSpace?"spc_other":"spc_synthetic"]},
           ...(op==="get"||op==="update"||op==="delete"
@@ -937,7 +937,10 @@ test("third-party OAuth Delegation unavailable when opt-in disabled or write Sco
       modelKey:"task",operation:"create",reason:"Please create one task",
     },
   }}),readOnly.env);
-  assert.equal((await blocked.json()).error.code,-32602);
+  assert.equal(blocked.status,403);
+  assert.match(blocked.headers.get("www-authenticate")||"",/error="insufficient_scope"/u);
+  const blockedMeta=(await blocked.json()).result._meta["mcp/www_authenticate"][0];
+  assert.match(blockedMeta,/scope="resources:read resources:write"/u);
   assert.equal(readOnly.calls.some(x=>x.path.endsWith("/oauth-delegation-requests")),false);
 });
 
@@ -961,7 +964,8 @@ test("Delegation tools advertise OAuth and provide bounded write Scope step-up",
     },params:{name:"lifespace.request_user_delegation",arguments:{
       modelKey:"task",operation,reason:"Synthetic authorized change test",
     }}}),f.env);
-    assert.equal(reply.status,200);
+    assert.equal(reply.status,403);
+    assert.match(reply.headers.get("www-authenticate")||"",/error="insufficient_scope"/u);
     const body=(await reply.json()).result;
     assert.equal(body.isError,true);
     const challenge=body._meta["mcp/www_authenticate"][0];
