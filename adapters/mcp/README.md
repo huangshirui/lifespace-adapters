@@ -2,7 +2,7 @@
 
 ## Current status / 当前状态
 
-**LifeSpace Identity OAuth Resource Server candidate — implemented and covered by synthetic tests, not deployed.**
+**LifeSpace Identity OAuth MCP is deployed to Staging in the previous Native-only release. This branch contains a newer, currently UNDEPLOYED unified Core operation candidate; only synthetic CI coverage has passed.**
 
 The obsolete Cloudflare Access Managed OAuth Preview architecture has been retired. There is **no legacy authentication compatibility mode, Preview deployment generator, or published Managed OAuth Worker** in this adapter.
 
@@ -14,7 +14,8 @@ MCP Client
   ├─ LifeSpace Account: Application / Space / Agent consent
   └─ MCP Protected Resource Server (this adapter)
        ├─ private, exact-resource Identity token introspection
-       └─ short-lived read-only Agent Direct execution → Core (current Grants checked)
+       └─ short-lived Agent Direct Core JWT → Core unified operation catalog/invoker
+          └─ optional User Delegation requires separate Account approval (existing Native-only bridge)
 ```
 
 **Do not confuse OAuth token acceptance with Core data authorization.**
@@ -22,19 +23,19 @@ An `lsp_oat_*` OAuth token identifies a currently authorized Client/Application/
 
 ## Files / 文件说明
 
-- `src/identity-oauth-worker.mjs`: independent MCP OAuth Protected Resource Server with RFC 9728 discovery, exact-resource Bearer introspection, Core Agent Direct read-only query bridge, and modern stateless/legacy MCP protocol handlers.
+- `src/identity-oauth-worker.mjs`: MCP Protected Resource Server with exact-resource OAuth introspection and short-lived Identity-issued Core execution, transforming the Core operation catalog into MCP tools.
 - `test/identity-oauth-worker.test.mjs`: synthetic positive and deny-path tests for the new Resource Server.
 - `wrangler.identity-oauth.jsonc`: **synthetic local/CI dry-run**; no live hostname, Worker name, secret or binding.
-- `src/progressive-discovery.mjs`: Core-owned dynamic inventory and selected-model semantic loading, with drift protection.
-- `src/projection.mjs`: pure canonical query-to-MCP Tool schema projection and bounded LifeSpace query request builder.
-- `test/projection.test.mjs`, `test/projection-fail-closed.test.mjs`, `test/external-discovery.test.mjs`: independent projection/contract validation.
+- `src/generic-operation-projection.mjs`: one protocol-only projection of Core-provided model/operation/inputSchema/opaque `operationRef`, without storage-origin distinctions.
+- `test/generic-operation-projection.test.mjs`: positive, forged-reference, cross-Space and malformed-catalog deny-path coverage.
+- Historical Native/External-specific projection modules were retired because their behavior is now owned by Core.
 
 ## Currently implemented MCP surface
 
 - `GET /.well-known/oauth-protected-resource` and the Resource-path-specific well-known endpoint return the fixed Identity OAuth Issuer and exact Resource identifier.
 - `POST /mcp/{mcp_*}` (one exact Core-issued Server ID) accepts only opaque `lsp_oat_*` bearer credentials and calls private Identity `POST /oauth/introspect` for **the exact requested Resource**. No browser Access JWT or server-only `lsa_*` is accepted as an MCP user credential.
 - Legacy `2025-11-25` `initialize`, `ping` and limited notifications remain implemented; modern `2026-07-28` `server/discover`, `tools/list`/`tools/call`, request headers and stateless response metadata are supported and synthetically tested.
-- `tools/list` and `tools/call` consume only the **Identity-issued read-only Agent Direct Core token** and project current Core-discovered models in the single Space selected by Consent. Execution is still revalidated by Core. They return **503** if the matching LifeSpace Identity/Core bridge, signatures, bindings or current-scoped discovery are unavailable. Synthetic tests pass, but this code is **not deployed**.
+- On this candidate branch, `tools/list` consumes a **current, Space-bound Core operation catalog** and `tools/call` invokes its opaque `operationRef`; Core enforces current OAuth, Space, Application, Grant, Model Policy, provider and record-specific rules. Both read and explicitly consented write tools can be projected. No Adapter-specific Person Directory/External/Native branch exists in this primary tool path. Real Staging E2E on this candidate is **not yet complete**, and the prior Staging release remains unchanged.
 
 ## Deployment boundary / 部署边界
 

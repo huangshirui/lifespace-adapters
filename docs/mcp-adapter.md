@@ -1,4 +1,16 @@
 # MCP Adapter（MCP 协议适配器）
+## 2026-11-08 · Core unified operation catalog / Core 统一操作投影（Candidate）
+
+LifeSpace Core is the only owner of Model/Record/Operation semantics, including current configuration and effective authority. A third-party Agent must see the **same generic model tool family** whether Core internally resolves Native Runtime, Kernel Person Directory or a Space-bound External Provider. The MCP Adapter must not branch on `origin: external`, `person_directory`, `per_*`, Provider keys, database tables, credentials or dynamic/static storage.
+
+- `GET /api/v1/spaces/{spaceId}/_discovery/operations`: returns only the current OAuth Agent-authorized Core operation descriptors, including opaque `operationRef`, normal `modelKey`, `operation`, `inputSchema` and human-readable title/description. No storage class or Provider details.
+- `POST /api/v1/spaces/{spaceId}/_operations/{operationRef}/invoke`: sends generic `{arguments}` using the signed, short-lived Core execution JWT; Core resolves the operation, checks current configuration and authority again, then runs its established Kernel/Runtime/Provider authorization/validation/Change implementation.
+- Adapter deterministically projects `lifespace.<operation>.<modelKey>` and `lifespace.action.<modelKey>.<actionKey>` regardless of internal execution kind; no Person-specific or External-specific Adapter modules. `operationRef` is never a bearer credential or delegated permission.
+- External capabilities, Person linked-user restrictions, immutable Native `mct_*`, and provider schema evolution are **Core-internal**. Input schema is supplied by Core and may evolve; no version schema is fabricated for External.
+- Third-party Account web confirmation and original in-app/trusted-WeCom Delegation confirmation remain distinct UX, with the same Core authoritative arq_*/dlg_* facts.
+
+**Status:** paired [LifeSpace PR #501](https://github.com/huangshirui/LifeSpace/pull/501) and [Adapters PR #39](https://github.com/huangshirui/lifespace-adapters/pull/39) are DRAFT, not deployed or real OAuth E2E accepted. Previous Native-only staging acceptance belongs to the prior release and cannot be cited as this generic operation layer's acceptance.
+
 
 ## 2026-11-08 · Third-party Agent Delegation confirmation (under acceptance)
 

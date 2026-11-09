@@ -1,7 +1,4 @@
-import { projectNativeMutations, buildNativeMutation } from "./mutation-projection.mjs";
-import { projectNativeGets, buildNativeGet } from "./get-projection.mjs";
-import { loadSelectedModelSemantics } from "./progressive-discovery.mjs";
-import { buildLifeSpaceQueryRequest, projectSelectedModelsToMcp } from "./projection.mjs";
+import { projectCoreOperationCatalog, buildCoreOperation } from "./generic-operation-projection.mjs";
 
 // New Identity-owned OAuth MCP Resource Server. Not the retired Access
 // Managed OAuth Preview. This layer never exchanges CF Access assertions,
@@ -218,7 +215,13 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
   const oauthRequest = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/oauth-delegation-requests(?:\/arq_[a-f0-9]{32})?$/u.test(path)
     && (method === "POST" && path.endsWith("/oauth-delegation-requests")
       || method === "GET" && /\/arq_[a-f0-9]{32}$/u.test(path));
-  if (!oauthRequest && !recordGet && !mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
+  const genericCatalog = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_discovery\/operations$/u.test(path)
+    && method==="GET";
+  const genericCommand = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_operations\/op_[a-f0-9]{64}\/invoke$/u.test(path)
+    && method==="POST";
+  const delegatedAction = Boolean(delegationId) && method==="POST"
+    && /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records\/rec_[A-Za-z0-9_-]+\/actions\/[a-z][a-z0-9_-]{0,62}$/u.test(path);
+  if (!genericCatalog && !genericCommand && !delegatedAction && !oauthRequest && !recordGet && !mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
     return { error: "CORE_PATH_REJECTED" };
   }
   let response;
@@ -236,11 +239,12 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
   if (!response.ok) {
     // An invalid Canonical Query is a caller error, not a Core outage.
     // Never forward Core's raw error body: it may contain private details.
-    if ((path.endsWith("/records/query") || mutationPath)
+    if ((genericCommand || delegatedAction || path.endsWith("/records/query") || mutationPath)
       && (response.status === 400 || response.status === 422)) {
-      return { error: mutationPath ? "INVALID_MUTATION_ARGUMENTS" : "INVALID_QUERY_ARGUMENTS" };
+      return { error: (genericCommand || delegatedAction) ? "INVALID_OPERATION_ARGUMENTS"
+        : mutationPath ? "INVALID_MUTATION_ARGUMENTS" : "INVALID_QUERY_ARGUMENTS" };
     }
-    if (mutationPath && response.status === 409) return { error: "RECORD_VERSION_CONFLICT" };
+    if ((genericCommand || delegatedAction || mutationPath) && response.status === 409) return { error: "RECORD_VERSION_CONFLICT" };
     return { error: response.status === 401 || response.status === 403
       ? "CORE_PERMISSION_DENIED" : "CORE_UNAVAILABLE" };
   }
@@ -255,78 +259,13 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
   return { payload };
 }
 
-async function currentToolProjection(env, coreToken, selectedSpace, allowMutations = false) {
-  const first = await coreJson(env, coreToken, "/api/v1/me/_discovery/inventory");
-  if (first.error) return first;
-  const inventory = first.payload?.data;
-  if (!Array.isArray(inventory?.models) || !Array.isArray(inventory?.spaces)
-    || inventory.spaces.some(space => space?.spaceId !== selectedSpace)) {
-    return { error: "CORE_UNSCOPED_DISCOVERY" };
-  }
-  const keys = [...new Set(inventory.spaces.flatMap(space => (space.models ?? [])
-    .filter(entry => entry?.access?.includes("read"))
-    .map(entry => entry.modelKey)
-    .filter(key => typeof key === "string" && /^[a-z][a-z0-9_]{1,62}$/u.test(key))))]
-    .sort();
-  // Do not silently drop configured Models: either project the entire
-  // authorized exposure or fail closed with an explicit capacity error.
-  if (keys.length > MAX_DISCOVERED_MODELS) return { error: "CORE_DISCOVERY_MODEL_LIMIT" };
-  if (!keys.length) return { projected: { tools: [], bindings: {} } };
-  // One Core invocation returns all selected semantics; Core still checks
-  // every Model Grant, current Server Tool Policy and selected Space.
-  // This avoids exceeding Cloudflare's 32 Worker invocations per MCP request.
-  const batchPath = "/api/v1/spaces/" + encodeURIComponent(selectedSpace)
-    + "/_discovery/models/batch";
-  const batch = await coreJson(env, coreToken, batchPath, "POST", { modelKeys: keys });
-  if (batch.error) return batch;
-  const rawDetails = batch.payload?.data?.models;
-  if (!Array.isArray(rawDetails) || rawDetails.length !== keys.length) {
-    return { error: "CORE_DISCOVERY_INVALID_BATCH" };
-  }
-  const details = new Map();
-  for (const item of rawDetails) {
-    if (!item || !keys.includes(item.modelKey) || details.has(item.modelKey)
-      || !item.detail || typeof item.detail !== "object" || Array.isArray(item.detail)) {
-      return { error: "CORE_DISCOVERY_INVALID_BATCH" };
-    }
-    details.set(item.modelKey, { data: item.detail });
-  }
-  const detailPrefix = "/api/v1/spaces/" + encodeURIComponent(selectedSpace)
-    + "/_discovery/models/";
-  const fetchJson = async path => {
-    if (!path.startsWith(detailPrefix)) {
-      throw new Error("Core semantic batch path escaped authorized Space");
-    }
-    const modelKey = path.slice(detailPrefix.length);
-    if (!details.has(modelKey)) throw new Error("No current Core semantic detail");
-    return details.get(modelKey);
-  };
-  try {
-    const selection = await loadSelectedModelSemantics({
-      selectedModelKeys: keys, inventoryResponse: first.payload, fetchJson,
-    });
-    // A signed OAuth execution JWT is restricted to the one consented Space.
-    if (selection.models.some(item =>
-      !item.spaces.every(space => space.spaceId === selectedSpace))) {
-      return { error: "CORE_UNSCOPED_SEMANTICS" };
-    }
-    const projected = projectSelectedModelsToMcp({
-      ...selection,
-      models: selection.models.filter(item => !Array.isArray(item.detail.mcpOperations)
-        || item.detail.mcpOperations.includes("query")),
-    });
-    const gets = projectNativeGets(selection);
-    projected.tools.push(...gets.tools);
-    Object.assign(projected.bindings, gets.bindings);
-    if (allowMutations) {
-      const mutations = projectNativeMutations(selection);
-      projected.tools.push(...mutations.tools);
-      Object.assign(projected.bindings, mutations.bindings);
-    }
-    return { projected };
-  } catch { return { error: "CORE_DISCOVERY_UNAVAILABLE" }; }
+async function currentToolProjection(env,coreToken,selectedSpace){
+  const path="/api/v1/spaces/"+encodeURIComponent(selectedSpace)+"/_discovery/operations";
+  const response=await coreJson(env,coreToken,path);
+  if(response.error)return response;
+  try{return {projected:projectCoreOperationCatalog(response.payload?.data,selectedSpace)};}
+  catch{return {error:"CORE_OPERATION_CATALOG_INVALID"};}
 }
-
 
 // This is a UI protocol transport, never a Delegation authority. The user
 // approves only on the independent LifeSpace Account website.
@@ -334,6 +273,13 @@ const DELEGATION_MODEL = /^[a-z][a-z0-9_]{1,62}$/u;
 const DELEGATION_ID = /^dlg_[A-Za-z0-9_-]+$/u;
 const REQUEST_ID = /^arq_[a-f0-9]{32}$/u;
 const DELEGATED_OPS = ["get", "query", "create", "update", "delete"];
+const DELEGATED_ACTION = /^action:([a-z][a-z0-9_-]{0,62})$/u;
+const delegatedOp = value => typeof value === "string"
+  && (DELEGATED_OPS.includes(value) || DELEGATED_ACTION.test(value));
+const delegatedOpSchema = {oneOf:[
+  {type:"string",enum:DELEGATED_OPS},
+  {type:"string",pattern:"^action:[a-z][a-z0-9_-]{0,62}$"},
+]};
 function userDelegationTools() {
   return [
     { name: "lifespace.request_user_delegation",
@@ -342,7 +288,7 @@ function userDelegationTools() {
       inputSchema: {type:"object",additionalProperties:false,required:["modelKey","operation","reason"],
         properties:{
           modelKey:{type:"string",pattern:"^[a-z][a-z0-9_]{1,62}$"},
-          operation:{type:"string",enum:DELEGATED_OPS},
+          operation:delegatedOpSchema,
           reason:{type:"string",minLength:4,maxLength:250},
         }},
     },
@@ -354,13 +300,13 @@ function userDelegationTools() {
     },
     { name: "lifespace.execute_user_delegation",
       title: "Execute One Approved LifeSpace User Delegation",
-      description: "Use an approved, bounded, single-use LifeSpace Delegation for its exact model operation. LifeSpace Core rechecks the current User authority and records Principal=User / Actor=Agent.",
+      description: "Use a single-use Account-approved User Delegation for an exact Core-supported Model operation, including published Native Actions. Non-atomic Provider writes remain unsupported. Core checks the current User authority; Principal=User / Actor=Agent.",
       annotations:{readOnlyHint:false,destructiveHint:true,idempotentHint:false,openWorldHint:false},
       inputSchema:{type:"object",additionalProperties:false,required:["delegationId","modelKey","operation"],
         properties:{
           delegationId:{type:"string",pattern:"^dlg_[A-Za-z0-9_-]+$"},
           modelKey:{type:"string",pattern:"^[a-z][a-z0-9_]{1,62}$"},
-          operation:{type:"string",enum:DELEGATED_OPS},
+          operation:delegatedOpSchema,
           recordId:{type:"string",pattern:"^rec_[A-Za-z0-9_-]+$"},
           data:{type:"object",description:"Canonical model payload validated by LifeSpace Core."},
         }},
@@ -371,10 +317,18 @@ function delegatedCoreOperation(spaceId, args) {
   if (!args || typeof args !== "object" || Array.isArray(args)
     || Object.keys(args).some(k => !["delegationId","modelKey","operation","recordId","data"].includes(k))
     || !DELEGATION_ID.test(args.delegationId||"") || !DELEGATION_MODEL.test(args.modelKey||"")
-    || !DELEGATED_OPS.includes(args.operation)) return null;
+    || !delegatedOp(args.operation)) return null;
   const base="/api/v1/spaces/" + encodeURIComponent(spaceId)
     + "/models/" + encodeURIComponent(args.modelKey) + "/records";
   const id=args.recordId;
+  const action=DELEGATED_ACTION.exec(args.operation);
+  if (action) {
+    if (!/^rec_[A-Za-z0-9_-]+$/u.test(id||"") || !args.data
+      || typeof args.data!=="object" || Array.isArray(args.data)
+      || !Number.isSafeInteger(args.data.version) || args.data.version<1) return null;
+    return {method:"POST",path:base+"/"+encodeURIComponent(id)+"/actions/"
+      +encodeURIComponent(action[1]),body:args.data};
+  }
   if (args.operation === "get") {
     if (!/^rec_[A-Za-z0-9_-]+$/u.test(id||"") || args.data!==undefined) return null;
     return {method:"GET",path:base+"/"+encodeURIComponent(id)};
@@ -537,8 +491,7 @@ export async function handleIdentityOAuthMcp(request, env) {
   const execution = await coreExecution(authorized, request, config, env);
   if (execution.error) return json({ error: execution.error }, 503);
 
-  const current = await currentToolProjection(env, execution.token, authorized.context.spaceId,
-    authorized.context.scopes.includes("resources:write"));
+  const current = await currentToolProjection(env, execution.token, authorized.context.spaceId);
   if (current.error) return json({ error: current.error }, 503);
   if (message.method === "tools/list") {
     if (message.params && (typeof message.params !== "object" || Array.isArray(message.params)
@@ -566,7 +519,7 @@ export async function handleIdentityOAuthMcp(request, env) {
     let path,method="GET",payload,delegation=null;
     if (message.params.name==="lifespace.request_user_delegation") {
       if (Object.keys(args).some(k=>!["modelKey","operation","reason"].includes(k))
-        || !DELEGATION_MODEL.test(args.modelKey||"") || !DELEGATED_OPS.includes(args.operation)
+        || !DELEGATION_MODEL.test(args.modelKey||"") || !delegatedOp(args.operation)
         || typeof args.reason!=="string" || args.reason.trim().length<4 || args.reason.trim().length>250)
         return rpcError(message.id,-32602,"Invalid User Delegation request");
       if (["create","update","delete"].includes(args.operation)
@@ -599,13 +552,8 @@ export async function handleIdentityOAuthMcp(request, env) {
   const binding = current.projected.bindings[message.params.name];
   if (!binding) return rpcError(message.id, -32602, "Tool is not in the currently authorized projection");
   let operation;
-  try {
-    operation = binding.kind === "native-mutation"
-      ? buildNativeMutation(binding, message.params.arguments)
-      : binding.kind === "native-get"
-        ? buildNativeGet(binding, message.params.arguments)
-        : buildLifeSpaceQueryRequest(binding, message.params.arguments);
-  } catch { return rpcError(message.id, -32602, "Invalid arguments for current model semantics"); }
+  try { operation=buildCoreOperation(binding,message.params.arguments); }
+  catch { return rpcError(message.id,-32602,"Invalid arguments for current Core operation"); }
   if (!operation.path.startsWith("/api/v1/spaces/"
     + encodeURIComponent(authorized.context.spaceId) + "/")) {
     return rpcError(message.id, -32602, "Selected Space mismatch");
