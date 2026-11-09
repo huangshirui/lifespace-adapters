@@ -398,7 +398,9 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       if (denied && path.endsWith("/records/query")) return Response.json({ error: "forbidden" }, { status: 403 });
       if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/oauth-delegation-requests" && init.method === "POST") {
         const v = JSON.parse(init.body);
-        assert.deepEqual(v, {modelKey:"task",operation:"create",reason:"Please create one task"});
+        assert.equal(v.modelKey,"task");
+        assert.ok(["create","action:complete"].includes(v.operation));
+        assert.equal(typeof v.reason,"string");
         return Response.json({data:{id:"arq_"+ "f".repeat(32),status:"pending",approvalUrl:"https://account.example.test/delegation?request_id=arq_"+ "f".repeat(32)}});
       }
       if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/oauth-delegation-requests/arq_"+"f".repeat(32)) {
@@ -447,6 +449,12 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       if (mcpOperations?.includes("get") && init.method === "GET"
         && path === "/api/v1/spaces/spc_synthetic/models/task/records/rec_synthetic") {
         return Response.json({ data: { id: "rec_synthetic", version: 1 } });
+      }
+      if (mayDelegate && init.method === "POST"
+        && path === "/api/v1/spaces/spc_synthetic/models/task/records/rec_synthetic/actions/complete") {
+        assert.equal(init.headers["x-lifespace-delegation-id"],"dlg_synthetic");
+        assert.deepEqual(JSON.parse(init.body),{version:1});
+        return Response.json({data:{id:"rec_synthetic",version:2,status:"completed"}});
       }
       if (mayDelegate && init.method === "POST" && path === "/api/v1/spaces/spc_synthetic/models/task/records") {
         assert.equal(init.headers["x-lifespace-delegation-id"], "dlg_synthetic");
@@ -791,6 +799,23 @@ test("third-party OAuth may request LifeSpace Account URL, status and explicit r
   const executeCalls=f.calls.filter(x=>x.path==="/oauth/execution-tokens");
   assert.ok(executeCalls.some(x=>JSON.parse(x.init.body).delegationId==="dlg_synthetic"));
   assert.ok(f.calls.some(x=>x.service==="CORE" && x.init.headers["x-lifespace-delegation-id"]==="dlg_synthetic"));
+  // Published Native Action is another exact operation under the same
+  // Account approval UX; it is never routed through trusted Agent confirmation.
+  const actionRequest=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.request_user_delegation",arguments:{
+      modelKey:"task",operation:"action:complete",reason:"Complete approved task once",
+    },
+  }}),f.env);
+  assert.ok(JSON.parse((await actionRequest.json()).result.content[0].text).approvalUrl);
+  const action=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.execute_user_delegation",arguments:{
+      delegationId:"dlg_synthetic",modelKey:"task",operation:"action:complete",
+      recordId:"rec_synthetic",data:{version:1},
+    },
+  }}),f.env);
+  assert.deepEqual(JSON.parse((await action.json()).result.content[0].text),
+    {id:"rec_synthetic",version:2,status:"completed"});
+  assert.ok(f.calls.some(x=>x.service==="CORE"&&x.path.endsWith("/records/rec_synthetic/actions/complete")));
 });
 
 test("third-party OAuth Delegation unavailable when opt-in disabled or write Scope absent", async () => {
