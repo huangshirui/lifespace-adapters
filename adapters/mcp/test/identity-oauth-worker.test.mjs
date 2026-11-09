@@ -804,7 +804,8 @@ test("third-party OAuth may request LifeSpace Account URL, status and explicit r
   const f=connectedFixture({mayDelegate:true, oauthScopes:"resources:read resources:write"});
   const listed=await handleIdentityOAuthMcp(rpc("tools/list"),f.env);
   assert.equal(listed.status,200);
-  const names=(await listed.json()).result.tools.map(x=>x.name);
+  const tools=(await listed.json()).result.tools;
+  const names=tools.map(x=>x.name);
   assert.ok(names.includes("lifespace.request_user_delegation"));
   assert.ok(names.includes("lifespace.user_delegation_status"));
   assert.ok(names.includes("lifespace.execute_user_delegation"));
