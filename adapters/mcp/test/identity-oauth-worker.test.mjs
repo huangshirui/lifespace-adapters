@@ -392,14 +392,16 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
     } },
     CORE: { fetch: async (url, init) => {
       const path = new URL(url).pathname;
-      calls.push({ service: "CORE", path, init });
+      calls.push({ service: "CORE", path, url:String(url), init });
       assert.equal(init.headers.authorization, "Bearer " + signToken);
       assert.ok(!JSON.stringify(init.headers).includes(TOKEN));
       if (denied && path.endsWith("/records/query")) return Response.json({ error: "forbidden" }, { status: 403 });
       if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/oauth-delegation-requests" && init.method === "POST") {
         const v = JSON.parse(init.body);
-        assert.equal(v.modelKey,"task");
-        assert.ok(["create","action:complete"].includes(v.operation));
+        assert.ok(["task","person"].includes(v.modelKey));
+        assert.ok(v.modelKey==="person"
+          ? ["query","get","create","update","delete"].includes(v.operation)
+          : ["create","action:complete"].includes(v.operation));
         assert.equal(typeof v.reason,"string");
         return Response.json({data:{id:"arq_"+ "f".repeat(32),status:"pending",approvalUrl:"https://account.example.test/delegation?request_id=arq_"+ "f".repeat(32)}});
       }
@@ -449,6 +451,26 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       if (mcpOperations?.includes("get") && init.method === "GET"
         && path === "/api/v1/spaces/spc_synthetic/models/task/records/rec_synthetic") {
         return Response.json({ data: { id: "rec_synthetic", version: 1 } });
+      }
+      if (mayDelegate && /^\/api\/v1\/spaces\/spc_synthetic\/people(?:\/per_synthetic)?$/u.test(path)) {
+        assert.equal(init.headers["x-lifespace-delegation-id"],"dlg_synthetic");
+        if (init.method==="POST"){
+          assert.equal(path,"/api/v1/spaces/spc_synthetic/people");
+          return Response.json({data:{id:"per_synthetic",displayName:"Synthetic Person",version:1}},{status:201});
+        }
+        if (init.method==="GET"){
+          if (path.endsWith("/per_synthetic"))
+            return Response.json({data:{id:"per_synthetic",displayName:"Synthetic Person",version:1}});
+          return Response.json({data:{items:[{id:"per_synthetic"}],nextCursor:null}});
+        }
+        if (init.method==="PATCH"){
+          assert.deepEqual(JSON.parse(init.body),{version:1,displayName:"Synthetic Updated"});
+          return Response.json({data:{id:"per_synthetic",displayName:"Synthetic Updated",version:2}});
+        }
+        if (init.method==="DELETE"){
+          assert.deepEqual(JSON.parse(init.body),{version:2});
+          return new Response(null,{status:204});
+        }
       }
       if (mayDelegate && init.method === "POST"
         && path === "/api/v1/spaces/spc_synthetic/models/task/records/rec_synthetic/actions/complete") {
@@ -816,6 +838,54 @@ test("third-party OAuth may request LifeSpace Account URL, status and explicit r
   assert.deepEqual(JSON.parse((await action.json()).result.content[0].text),
     {id:"rec_synthetic",version:2,status:"completed"});
   assert.ok(f.calls.some(x=>x.service==="CORE"&&x.path.endsWith("/records/rec_synthetic/actions/complete")));
+});
+
+test("third-party Account-approved Person supports Kernel routes but never inherits Native record ids or authority", async()=>{
+  const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write"});
+  async function call(name,args){
+    const resp=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+      name,arguments:args,
+    }}),f.env);
+    return (await resp.json());
+  }
+  const request=await call("lifespace.request_user_delegation",{
+    modelKey:"person",operation:"create",reason:"Create one approved Person",
+  });
+  assert.ok(JSON.parse(request.result.content[0].text).approvalUrl);
+  const base={delegationId:"dlg_synthetic",modelKey:"person"};
+  const create=await call("lifespace.execute_user_delegation",{
+    ...base,operation:"create",data:{displayName:"Synthetic Person"},
+  });
+  assert.equal(JSON.parse(create.result.content[0].text).id,"per_synthetic");
+  const get=await call("lifespace.execute_user_delegation",{
+    ...base,operation:"get",recordId:"per_synthetic",
+  });
+  assert.equal(JSON.parse(get.result.content[0].text).displayName,"Synthetic Person");
+  const query=await call("lifespace.execute_user_delegation",{
+    ...base,operation:"query",data:{search:"Synthetic",limit:3},
+  });
+  assert.equal(JSON.parse(query.result.content[0].text).items[0].id,"per_synthetic");
+  assert.ok(f.calls.some(c=>c.service==="CORE" && c.init.method==="GET"
+    && c.url.includes("/people?q=Synthetic&limit=3")));
+  const updated=await call("lifespace.execute_user_delegation",{
+    ...base,operation:"update",recordId:"per_synthetic",
+    data:{version:1,displayName:"Synthetic Updated"},
+  });
+  assert.equal(JSON.parse(updated.result.content[0].text).version,2);
+  const deleted=await call("lifespace.execute_user_delegation",{
+    ...base,operation:"delete",recordId:"per_synthetic",data:{version:2},
+  });
+  assert.equal(JSON.parse(deleted.result.content[0].text).deleted,true);
+  const wrongId=await call("lifespace.execute_user_delegation",{
+    ...base,operation:"update",recordId:"rec_native",
+    data:{version:1,displayName:"Forbidden"},
+  });
+  assert.equal(wrongId.error.code,-32602);
+  const wrongSchema=await call("lifespace.execute_user_delegation",{
+    ...base,operation:"query",data:{arbitrary:"field"},
+  });
+  assert.equal(wrongSchema.error.code,-32602);
+  assert.equal(f.calls.filter(c=>c.service==="CORE"&&c.path.includes("/people")).length,5);
 });
 
 test("third-party OAuth Delegation unavailable when opt-in disabled or write Scope absent", async () => {
