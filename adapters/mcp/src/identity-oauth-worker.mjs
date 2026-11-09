@@ -312,7 +312,7 @@ function userDelegationTools() {
     },
     { name: "lifespace.execute_user_delegation",
       title: "Execute One Approved LifeSpace User Delegation",
-      description: "Use one Account-approved User Delegation for an exact current Core operation, including Person Directory and published Actions. Current User authority and Principal=User / Actor=Agent are validated by Core.",
+      description: "Use one Account-approved User Delegation for an exact current Core operation, including Person Directory, Provider-supported External models, and published Actions. For External writes Core consumes the Delegation before the single Provider write attempt even on failure. Current User authority and Principal=User / Actor=Agent are validated by Core.",
       annotations:{readOnlyHint:false,destructiveHint:true,idempotentHint:false,openWorldHint:false},
       inputSchema:{type:"object",additionalProperties:false,required:["delegationId","modelKey","operation"],
         properties:{
@@ -389,7 +389,9 @@ function delegatedCoreOperation(spaceId, args) {
   }
   if (!/^rec_[A-Za-z0-9_-]+$/u.test(id||"") || !args.data
     || typeof args.data!=="object" || Array.isArray(args.data)) return null;
-  if (!Number.isSafeInteger(args.data.version) || args.data.version<1) return null;
+  // Native optimistic version is a Core Model Contract rule, NOT an Adapter
+  // assumption about every public model (External Provider models never
+  // require the Native version). Core validates actual operation input.
   return {method:args.operation==="update"?"PATCH":"DELETE",path:base+"/"+encodeURIComponent(id),body:args.data};
 }
 
