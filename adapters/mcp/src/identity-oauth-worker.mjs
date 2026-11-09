@@ -690,6 +690,9 @@ export async function handleIdentityOAuthMcp(request, env) {
       "lifespace.execute_user_delegation"].includes(message.params.name)) {
     if (!authorized.context.mayRequestDelegation)
       return rpcError(message.id, -32602, "User Delegation is disabled for this OAuth grant");
+    if(message.params.name!=="lifespace.request_user_delegation"
+      && (message.params.requestState!==undefined || message.params.inputResponses!==undefined))
+      return rpcError(message.id,-32602,"Elicitation state is not accepted by this Tool");
     const args=message.params.arguments;
     const space=authorized.context.spaceId;
     let path,method="GET",payload,delegation=null;
@@ -701,6 +704,46 @@ export async function handleIdentityOAuthMcp(request, env) {
       if (!["query","get"].includes(args.operation)
         && !authorized.context.scopes.includes("resources:write"))
         return writeScopeStepUp(message.id,config,request,modern);
+      const state=message.params.requestState;
+      const responses=message.params.inputResponses;
+      if(state!==undefined || responses!==undefined) {
+        if(!urlElicitationCapable(message.params,modern) || state===undefined
+          || (responses!==undefined && (!responses||typeof responses!=="object"
+            ||Array.isArray(responses)
+            ||Object.keys(responses).some(k=>k!==ELICITATION_KEY))))
+          return rpcError(message.id,-32602,"Invalid MCP URL elicitation continuation");
+        const pending=await verifyApprovalState(env,authorized,config,args,state).catch(()=>null);
+        if(!pending)return rpcError(message.id,-32602,"Expired, tampered or mismatched elicitation state");
+        const answered=responses?.[ELICITATION_KEY];
+        if(answered!==undefined
+          &&(!answered||typeof answered!=="object"
+            ||Array.isArray(answered)
+            ||Object.keys(answered).some(k=>k!=="action")
+            ||!["accept","decline","cancel"].includes(answered.action)))
+          return rpcError(message.id,-32602,"Invalid elicitation response");
+        if(answered?.action==="decline"||answered?.action==="cancel")
+          return rpcResult(message.id,{isError:true,content:[{type:"text",
+            text:"User did not continue LifeSpace Account approval; no Delegation was executed."}]},modern);
+        const statusPath="/api/v1/spaces/"+encodeURIComponent(space)
+          +"/oauth-delegation-requests/"+encodeURIComponent(pending.id);
+        const status=await coreJson(env,execution.token,statusPath);
+        if(status.error)return rpcResult(message.id,{isError:true,
+          content:[{type:"text",text:status.error}]},modern);
+        const result=status.payload?.data;
+        if(!delegationStatusMatches(result,pending.id,args,authorized,config))
+          return rpcError(message.id,-32602,"Delegation status context mismatch");
+        if(result.status==="approved") {
+          if(!DELEGATION_ID.test(result.delegationId||""))
+            return rpcError(message.id,-32602,"Approved Delegation ID unavailable");
+          return rpcResult(message.id,{content:[{type:"text",text:JSON.stringify(result)}]},modern);
+        }
+        if(result.status==="pending")
+          return approvalInputRequired(message.id,state,{...pending,
+            modelKey:args.modelKey,operation:args.operation},modern);
+        return rpcResult(message.id,{isError:true,
+          content:[{type:"text",text:"LifeSpace Account Delegation "+result.status
+            +"; no operation was executed."}]},modern);
+      }
       path="/api/v1/spaces/"+encodeURIComponent(space)+"/oauth-delegation-requests";
       method="POST";payload=args;
     } else if (message.params.name==="lifespace.user_delegation_status") {
@@ -720,6 +763,17 @@ export async function handleIdentityOAuthMcp(request, env) {
       : execution;
     if (coreToken.error) return json({error:coreToken.error},503);
     const outcome=await coreJson(env,coreToken.token,path,method,payload,delegation);
+    if(message.params.name==="lifespace.request_user_delegation" && !outcome.error
+      && urlElicitationCapable(message.params,modern)) {
+      const pending=outcome.payload?.data;
+      let state;
+      try {state=await signApprovalState(env,authorized,config,args,pending);}
+      catch {return rpcError(message.id,-32603,"Unable to protect elicitation continuation");}
+      if(!state)return rpcError(message.id,-32603,"Invalid Core approval URL or pending request");
+      return approvalInputRequired(message.id,state,{
+        url:pending.approvalUrl,modelKey:args.modelKey,operation:args.operation,
+      },modern);
+    }
     return rpcResult(message.id,{
       ...(outcome.error ? {isError:true} : {}),
       content:[{type:"text",text: outcome.error||JSON.stringify(outcome.payload?.data??outcome.payload)}],
