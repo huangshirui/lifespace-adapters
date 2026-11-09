@@ -398,9 +398,10 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       if (denied && path.endsWith("/records/query")) return Response.json({ error: "forbidden" }, { status: 403 });
       if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/oauth-delegation-requests" && init.method === "POST") {
         const v = JSON.parse(init.body);
-        assert.ok(["task","person"].includes(v.modelKey));
+        assert.ok(["task","person","external_synthetic"].includes(v.modelKey));
         assert.ok(v.modelKey==="person"
           ? ["query","get","create","update","delete"].includes(v.operation)
+          : v.modelKey==="external_synthetic" ? v.operation==="update"
           : ["create","action:complete"].includes(v.operation));
         assert.equal(typeof v.reason,"string");
         return Response.json({data:{id:"arq_"+ "f".repeat(32),status:"pending",approvalUrl:"https://account.example.test/delegation?request_id=arq_"+ "f".repeat(32)}});
@@ -477,6 +478,12 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
         assert.equal(init.headers["x-lifespace-delegation-id"],"dlg_synthetic");
         assert.deepEqual(JSON.parse(init.body),{version:1});
         return Response.json({data:{id:"rec_synthetic",version:2,status:"completed"}});
+      }
+      if (mayDelegate && init.method === "PATCH"
+        && path === "/api/v1/spaces/spc_synthetic/models/external_synthetic/records/rec_external_synthetic") {
+        assert.equal(init.headers["x-lifespace-delegation-id"],"dlg_synthetic");
+        assert.deepEqual(JSON.parse(init.body),{amount:8});
+        return Response.json({data:{id:"rec_external_synthetic",amount:8}});
       }
       if (mayDelegate && init.method === "POST" && path === "/api/v1/spaces/spc_synthetic/models/task/records") {
         assert.equal(init.headers["x-lifespace-delegation-id"], "dlg_synthetic");
@@ -886,6 +893,26 @@ test("third-party Account-approved Person supports Kernel routes but never inher
   });
   assert.equal(wrongSchema.error.code,-32602);
   assert.equal(f.calls.filter(c=>c.service==="CORE"&&c.path.includes("/people")).length,5);
+});
+
+test("External Account-approved write passes current Provider payload without Native version; Core owns at-most-one attempt",async()=>{
+  const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write"});
+  const request=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.request_user_delegation",
+    arguments:{modelKey:"external_synthetic",operation:"update",reason:"One Provider write attempt"},
+  }}),f.env);
+  assert.ok(JSON.parse((await request.json()).result.content[0].text).approvalUrl);
+  const executed=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.execute_user_delegation",
+    arguments:{delegationId:"dlg_synthetic",modelKey:"external_synthetic",operation:"update",
+      recordId:"rec_external_synthetic",data:{amount:8}},
+  }}),f.env);
+  assert.deepEqual(JSON.parse((await executed.json()).result.content[0].text),
+    {id:"rec_external_synthetic",amount:8});
+  const actual=f.calls.filter(c=>c.service==="CORE"&&c.init.method==="PATCH"
+    && c.path.endsWith("/records/rec_external_synthetic"));
+  assert.equal(actual.length,1);
+  assert.equal(actual[0].init.headers["x-lifespace-delegation-id"],"dlg_synthetic");
 });
 
 test("third-party OAuth Delegation unavailable when opt-in disabled or write Scope absent", async () => {
