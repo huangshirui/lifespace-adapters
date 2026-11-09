@@ -292,6 +292,105 @@ const delegatedOpSchema = {oneOf:[
   {type:"string",enum:DELEGATED_OPS},
   {type:"string",pattern:"^action:[a-z][a-z0-9_-]{0,62}$"},
 ]};
+// MCP 2026-07-28 URL elicitation is a protocol UX, never a new authority
+// source. MRTR returns immediately; only a later authenticated retry can
+// read Core's user-approved Delegation. No browser callback or token is trusted.
+const ELICITATION_KEY="lifespace_account_approval";
+function urlElicitationCapable(params,modern) {
+  const url=params?._meta?.["io.modelcontextprotocol/clientCapabilities"]?.elicitation?.url;
+  return modern && !!url && typeof url==="object" && !Array.isArray(url);
+}
+function safeApprovalUrl(raw,requestId) {
+  try {
+    const url=new URL(raw);
+    return url.protocol==="https:" && !url.username && !url.password
+      && !url.hash && url.pathname==="/delegation"
+      && url.searchParams.size===1 && url.searchParams.get("request_id")===requestId
+      && !["localhost","127.0.0.1"].includes(url.hostname)
+      ? url.href : null;
+  } catch{return null;}
+}
+function stableJson(value) {
+  if(Array.isArray(value))return "["+value.map(stableJson).join(",")+"]";
+  if(value && typeof value==="object")return "{"+Object.keys(value).sort()
+    .map(k=>JSON.stringify(k)+":"+stableJson(value[k])).join(",")+"}";
+  return JSON.stringify(value);
+}
+function base64url(bytes) {
+  let text="";for(const byte of bytes)text+=String.fromCharCode(byte);
+  return btoa(text).replaceAll("+","-").replaceAll("/","_").replace(/=+$/u,"");
+}
+function unbase64url(text) {
+  if(typeof text!=="string"||!/^[A-Za-z0-9_-]{1,2048}$/u.test(text))return null;
+  try {return Uint8Array.from(atob(text.replaceAll("-","+").replaceAll("_","/")
+    .padEnd(Math.ceil(text.length/4)*4,"=")),c=>c.charCodeAt(0));}
+  catch{return null;}
+}
+async function mrtrKey(env) {
+  const secret=env?.OAUTH_RESOURCE_SERVER_SECRET;
+  if(typeof secret!=="string"||secret.length<32)throw Error("MRTR secret unavailable");
+  return crypto.subtle.importKey("raw",new TextEncoder().encode(secret),
+    {name:"HMAC",hash:"SHA-256"},false,["sign","verify"]);
+}
+function stateBinding(auth,config,args,encoded) {
+  const c=auth.context;
+  return "lifespace-url-elicitation-v1\n"+encoded+"\n"
+    +stableJson({authorizationId:c.authorizationId,clientId:c.clientId,
+      userId:c.userId,applicationId:c.applicationId,spaceId:c.spaceId,
+      agentId:c.agentId,resource:config.resource,arguments:args});
+}
+async function signApprovalState(env,auth,config,args,pending) {
+  const approvalUrl=safeApprovalUrl(pending.approvalUrl,pending.id);
+  if(!REQUEST_ID.test(pending.id||"") || pending.status!=="pending" || !approvalUrl)
+    return null;
+  const exp=Math.min(Date.now()+600000,Date.parse(pending.expiresAt)||Date.now()+600000);
+  if(exp<=Date.now())return null;
+  const payload={v:1,id:pending.id,url:approvalUrl,exp};
+  const encoded=base64url(new TextEncoder().encode(JSON.stringify(payload)));
+  const key=await mrtrKey(env);
+  const mac=await crypto.subtle.sign("HMAC",key,
+    new TextEncoder().encode(stateBinding(auth,config,args,encoded)));
+  return encoded+"."+base64url(new Uint8Array(mac));
+}
+async function verifyApprovalState(env,auth,config,args,state) {
+  if(typeof state!=="string"||state.length>2800)return null;
+  const [encoded,signature,...extra]=state.split(".");
+  if(extra.length||!encoded||!signature)return null;
+  const mac=unbase64url(signature);
+  const data=unbase64url(encoded);
+  if(!mac||mac.length!==32||!data)return null;
+  const key=await mrtrKey(env);
+  if(!await crypto.subtle.verify("HMAC",key,mac,
+    new TextEncoder().encode(stateBinding(auth,config,args,encoded))))return null;
+  let payload;try{payload=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(data));}
+  catch{return null;}
+  if(!payload||payload.v!==1||!REQUEST_ID.test(payload.id||"")
+    ||!Number.isSafeInteger(payload.exp)||Date.now()>=payload.exp
+    ||!safeApprovalUrl(payload.url,payload.id))return null;
+  return payload;
+}
+function approvalInputRequired(id,state,pending,modern) {
+  return rpcResult(id,{
+    resultType:"input_required",
+    requestState:state,
+    inputRequests:{
+      [ELICITATION_KEY]:{
+        method:"elicitation/create",
+        params:{mode:"url",url:pending.url,
+          message:"在 LifeSpace Account 网页确认 "+pending.modelKey+" · "+pending.operation+" 的用户委托。确认后客户端可重新提交原工具调用；网页同意不直接授予权限。"},
+      },
+    },
+  },modern);
+}
+function delegationStatusMatches(payload,requestId,args,auth,config) {
+  const c=auth.context;
+  return payload?.id===requestId && payload.modelKey===args.modelKey
+    && payload.operation===args.operation && payload.reason===args.reason
+    && payload.applicationId===c.applicationId && payload.agentId===c.agentId
+    && payload.spaceId===c.spaceId && payload.clientId===c.clientId
+    && payload.resource===config.resource
+    && ["pending","approved","denied","expired"].includes(payload.status);
+}
 function oauthToolSecurity() {
   // A Delegation Tool can request a read or write operation. Announce its
   // baseline read Scope; a write request triggers a scoped OAuth step-up.
