@@ -24,6 +24,15 @@ test("one uniform tool contract for Kernel Person, dynamic External, Native and 
     "lifespace.action.event.complete","lifespace.create.event",
     "lifespace.create.person","lifespace.get.task","lifespace.query.person",
   ].sort());
+  // Tool declarations must guide scope-aware MCP clients without granting
+  // authority beyond the Core-owned current operation projection.
+  for(const tool of result.tools){
+    const read=tool.name==="lifespace.get.task"||tool.name==="lifespace.query.person";
+    const expected=[{type:"oauth2",scopes:read?["resources:read"]:["resources:read","resources:write"]}];
+    assert.deepEqual(tool.securitySchemes,expected,tool.name);
+    assert.deepEqual(tool._meta.securitySchemes,expected,tool.name);
+    assert.equal(tool.annotations.readOnlyHint,read,tool.name);
+  }
   for(const [name,binding] of Object.entries(result.bindings)){
     assert.deepEqual(Object.keys(binding).sort(),["kind","operationRef","spaceId"].sort(),name);
     const input={spaceId,data:{title:"Synthetic only"}};
