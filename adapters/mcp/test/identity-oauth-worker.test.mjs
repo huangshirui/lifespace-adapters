@@ -804,10 +804,16 @@ test("third-party OAuth may request LifeSpace Account URL, status and explicit r
   const f=connectedFixture({mayDelegate:true, oauthScopes:"resources:read resources:write"});
   const listed=await handleIdentityOAuthMcp(rpc("tools/list"),f.env);
   assert.equal(listed.status,200);
-  const names=(await listed.json()).result.tools.map(x=>x.name);
+  const tools=(await listed.json()).result.tools;
+  const names=tools.map(x=>x.name);
   assert.ok(names.includes("lifespace.request_user_delegation"));
   assert.ok(names.includes("lifespace.user_delegation_status"));
   assert.ok(names.includes("lifespace.execute_user_delegation"));
+  const executeTool=tools.find(x=>x.name==="lifespace.execute_user_delegation");
+  assert.ok(executeTool?.description?.includes("Account selects one-use, bounded time-limited repeat, or until-revoked lifetime"));
+  assert.equal(executeTool?.inputSchema?.properties?.mode,undefined,
+    "Agent must not choose duration/lifetime; only Account User can decide");
+
   const request=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
     name:"lifespace.request_user_delegation",arguments:{
       modelKey:"task",operation:"create",reason:"Please create one task",
