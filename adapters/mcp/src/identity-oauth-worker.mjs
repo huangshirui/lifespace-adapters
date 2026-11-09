@@ -219,7 +219,9 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
     && method==="GET";
   const genericCommand = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_operations\/op_[a-f0-9]{64}\/invoke$/u.test(path)
     && method==="POST";
-  if (!genericCatalog && !genericCommand && !oauthRequest && !recordGet && !mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
+  const delegatedAction = Boolean(delegationId) && method==="POST"
+    && /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records\/rec_[A-Za-z0-9_-]+\/actions\/[a-z][a-z0-9_-]{0,62}$/u.test(path);
+  if (!genericCatalog && !genericCommand && !delegatedAction && !oauthRequest && !recordGet && !mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
     return { error: "CORE_PATH_REJECTED" };
   }
   let response;
@@ -237,12 +239,12 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
   if (!response.ok) {
     // An invalid Canonical Query is a caller error, not a Core outage.
     // Never forward Core's raw error body: it may contain private details.
-    if ((genericCommand || path.endsWith("/records/query") || mutationPath)
+    if ((genericCommand || delegatedAction || path.endsWith("/records/query") || mutationPath)
       && (response.status === 400 || response.status === 422)) {
-      return { error: genericCommand ? "INVALID_OPERATION_ARGUMENTS"
+      return { error: (genericCommand || delegatedAction) ? "INVALID_OPERATION_ARGUMENTS"
         : mutationPath ? "INVALID_MUTATION_ARGUMENTS" : "INVALID_QUERY_ARGUMENTS" };
     }
-    if ((genericCommand || mutationPath) && response.status === 409) return { error: "RECORD_VERSION_CONFLICT" };
+    if ((genericCommand || delegatedAction || mutationPath) && response.status === 409) return { error: "RECORD_VERSION_CONFLICT" };
     return { error: response.status === 401 || response.status === 403
       ? "CORE_PERMISSION_DENIED" : "CORE_UNAVAILABLE" };
   }
