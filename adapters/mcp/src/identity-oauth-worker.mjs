@@ -292,9 +292,16 @@ const delegatedOpSchema = {oneOf:[
   {type:"string",enum:DELEGATED_OPS},
   {type:"string",pattern:"^action:[a-z][a-z0-9_-]{0,62}$"},
 ]};
+function oauthToolSecurity() {
+  // A Delegation Tool can request a read or write operation. Announce its
+  // baseline read Scope; a write request triggers a scoped OAuth step-up.
+  const securitySchemes=[{type:"oauth2",scopes:["resources:read"]}];
+  return {securitySchemes,_meta:{securitySchemes:structuredClone(securitySchemes)}};
+}
 function userDelegationTools() {
   return [
     { name: "lifespace.request_user_delegation",
+      ...oauthToolSecurity(),
       title: "Request LifeSpace User Delegation",
       description: "Ask the signed-in user to approve one specific Agent operation. Returns a LifeSpace Account confirmation URL; no authority is granted until approval.",
       inputSchema: {type:"object",additionalProperties:false,required:["modelKey","operation","reason"],
@@ -305,12 +312,14 @@ function userDelegationTools() {
         }},
     },
     { name: "lifespace.user_delegation_status",
+      ...oauthToolSecurity(),
       title: "Check LifeSpace Delegation Approval",
       description: "Check the current status of an explicit User Delegation request, then retrieve the Core-issued delegationId when approved.",
       inputSchema:{type:"object",additionalProperties:false,required:["requestId"],
         properties:{requestId:{type:"string",pattern:"^arq_[a-f0-9]{32}$"}}},
     },
     { name: "lifespace.execute_user_delegation",
+      ...oauthToolSecurity(),
       title: "Execute Account-Approved LifeSpace User Delegation",
       description: "Execute an exact Core model operation under a Delegation independently approved by the signed-in LifeSpace Account User. Account selects one-use, bounded time-limited repeat, or until-revoked lifetime; the Agent cannot choose or widen it. Native/Person and Provider-backed External operations stay restricted by current OAuth, User/Agent, Space, Model and policy authority; Core rejects revoked, expired, used, or cross-operation Delegations. External one-use write authority is consumed before the single Provider attempt, including on failure; repeated grants permit independently authorized attempts without exactly-once guarantees.",
       annotations:{readOnlyHint:false,destructiveHint:true,idempotentHint:false,openWorldHint:false},
@@ -413,6 +422,20 @@ function rpcError(id, code, message, status = 200, data) {
   return json({ jsonrpc: "2.0", id, error: {
     code, message, ...(data === undefined ? {} : { data }),
   } }, status);
+}
+// A missing write Scope on an otherwise authenticated Delegation is not a
+// malformed Tool call. MCP-capable Clients may request an explicitly approved
+// OAuth upgrade; neither this hint nor a refreshed Token grants Core authority.
+function writeScopeStepUp(id, config, request, modern) {
+  if (!resourceScopes(request).includes("resources:write"))
+    return rpcError(id,-32602,"Write operation is not offered by this MCP Server");
+  const required="resources:read resources:write";
+  const value='Bearer resource_metadata="'+config.metadata
+    +'", scope="'+required+'", error="insufficient_scope"'
+    +', error_description="Reauthorize for the requested write operation"';
+  return rpcResult(id,{isError:true,
+    content:[{type:"text",text:"OAuth write Scope required; reauthorize to request it."}],
+    _meta:{"mcp/www_authenticate":[value]}},modern);
 }
 
 function decodeMcpName(raw) {
@@ -570,9 +593,9 @@ export async function handleIdentityOAuthMcp(request, env) {
         || !DELEGATION_MODEL.test(args.modelKey||"") || !delegatedOp(args.operation)
         || typeof args.reason!=="string" || args.reason.trim().length<4 || args.reason.trim().length>250)
         return rpcError(message.id,-32602,"Invalid User Delegation request");
-      if (["create","update","delete"].includes(args.operation)
+      if (!["query","get"].includes(args.operation)
         && !authorized.context.scopes.includes("resources:write"))
-        return rpcError(message.id,-32602,"OAuth Client did not request write Scope");
+        return writeScopeStepUp(message.id,config,request,modern);
       path="/api/v1/spaces/"+encodeURIComponent(space)+"/oauth-delegation-requests";
       method="POST";payload=args;
     } else if (message.params.name==="lifespace.user_delegation_status") {
@@ -582,9 +605,9 @@ export async function handleIdentityOAuthMcp(request, env) {
     } else {
       const next=delegatedCoreOperation(space,args);
       if (!next) return rpcError(message.id,-32602,"Invalid Delegation execution arguments");
-      if (["create","update","delete"].includes(args.operation)
+      if (!["query","get"].includes(args.operation)
         && !authorized.context.scopes.includes("resources:write"))
-        return rpcError(message.id,-32602,"OAuth Client did not request write Scope");
+        return writeScopeStepUp(message.id,config,request,modern);
       path=next.path;method=next.method;payload=next.body;delegation=args.delegationId;
     }
     const coreToken=delegation

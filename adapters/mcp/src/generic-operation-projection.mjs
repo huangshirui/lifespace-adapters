@@ -32,9 +32,15 @@ export function projectCoreOperationCatalog(payload,spaceId) {
       :"lifespace."+row.operation+"."+row.modelKey;
     if(!TOOL.test(name)||Object.hasOwn(projected.bindings,name))throw Error("Duplicate model operation");
     const read=["query","get"].includes(row.operation);
+    // OAuth permissions are protocol metadata, never a substitute for Core's
+    // fresh credential Scope, Data Grant and Model Policy checks.
+    // Both forms support MCP clients using securitySchemes or legacy _meta.
+    const securitySchemes=[{type:"oauth2",scopes:read
+      ? ["resources:read"] : ["resources:read","resources:write"]}];
     projected.tools.push({name,title:row.title,description:row.description,
       annotations:{readOnlyHint:read,destructiveHint:["update","delete"].includes(row.operation)
         ||Boolean(action),idempotentHint:read,openWorldHint:false},
+      securitySchemes,_meta:{securitySchemes:structuredClone(securitySchemes)},
       inputSchema:structuredClone(row.inputSchema)});
     projected.bindings[name]={kind:"core-operation",spaceId,operationRef:row.operationRef};
   }

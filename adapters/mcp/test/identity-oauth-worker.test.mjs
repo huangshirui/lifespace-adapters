@@ -941,6 +941,37 @@ test("third-party OAuth Delegation unavailable when opt-in disabled or write Sco
   assert.equal(readOnly.calls.some(x=>x.path.endsWith("/oauth-delegation-requests")),false);
 });
 
+test("Delegation tools advertise OAuth and provide bounded write Scope step-up", async () => {
+  const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read"});
+  const listed=await handleIdentityOAuthMcp(rpc("tools/list"),f.env);
+  const list=(await listed.json()).result.tools;
+  for(const name of [
+    "lifespace.request_user_delegation",
+    "lifespace.user_delegation_status",
+    "lifespace.execute_user_delegation",
+  ]){
+    const tool=list.find(x=>x.name===name);
+    assert.ok(tool,name);
+    assert.deepEqual(tool.securitySchemes,[{type:"oauth2",scopes:["resources:read"]}]);
+    assert.deepEqual(tool._meta.securitySchemes,tool.securitySchemes);
+  }
+  for(const operation of ["create","action:complete"]){
+    const reply=await handleIdentityOAuthMcp(rpc("tools/call",{headers:{
+      "x-lifespace-mcp-scope-ceiling":"resources:read resources:write",
+    },params:{name:"lifespace.request_user_delegation",arguments:{
+      modelKey:"task",operation,reason:"Synthetic authorized change test",
+    }}}),f.env);
+    assert.equal(reply.status,200);
+    const body=(await reply.json()).result;
+    assert.equal(body.isError,true);
+    const challenge=body._meta["mcp/www_authenticate"][0];
+    assert.match(challenge,/scope="resources:read resources:write"/u);
+    assert.match(challenge,/error="insufficient_scope"/u);
+    assert.match(challenge,/oauth-protected-resource/u);
+  }
+  assert.equal(f.calls.some(x=>x.path.endsWith("/oauth-delegation-requests")),false);
+});
+
 test("Production and Staging share consented write semantics; read-only/ungranted contexts stay read-only", async () => {
   for (const patch of [{ oauthScopes: "resources:read" }, { advertisedAccess: ["read"] }]) {
     const f = connectedFixture({ mutations: true, environment: "production", oauthScopes: "resources:read resources:write", advertisedAccess: ["read", "write"], ...patch });
