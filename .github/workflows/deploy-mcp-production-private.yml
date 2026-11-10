@@ -1,0 +1,117 @@
+name: Prepare private LifeSpace MCP Adapter production
+
+# Private Worker ONLY. This never deploys Core/Identity/Account, creates
+# an OAuth grant, changes the public ingress, or enables a Server.
+# Owner must first publish and accept the identical Adapter SHA on Staging.
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type PREPARE_PRIVATE_MCP_PRODUCTION"
+        required: true
+        type: string
+      staging_acceptance:
+        description: "Type STAGING_MCP_E2E_VERIFIED after real OAuth/Delegation tests"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: lifespace-mcp-adapter-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require owner, reviewed main and explicit Staging signoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_ACTOR" = huangshirui
+          test "$GITHUB_TRIGGERING_ACTOR" = huangshirui
+          test "$GITHUB_REF_NAME" = main
+          test "${{ inputs.confirmation }}" = PREPARE_PRIVATE_MCP_PRODUCTION
+          test "${{ inputs.staging_acceptance }}" = STAGING_MCP_E2E_VERIFIED
+
+      - name: Verify the exact SHA was owner-deployed to MCP Staging
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUNS="$(gh api -X GET             "repos/$GITHUB_REPOSITORY/actions/workflows/deploy-mcp-staging.yml/runs"             -f branch=main -f event=workflow_dispatch -f head_sha="$GITHUB_SHA" -f per_page=100)"
+          echo "$RUNS" | jq -e --arg sha "$GITHUB_SHA"             '[.workflow_runs[] | select(.head_sha == $sha
+              and .head_branch == "main"
+              and .event == "workflow_dispatch"
+              and .status == "completed"
+              and .conclusion == "success")] | length > 0'
+          echo "Exact candidate Staging deployment verified."
+
+  prepare:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
+      MCP_PRODUCTION_WORKER_NAME: ${{ vars.MCP_PRODUCTION_WORKER_NAME }}
+      MCP_PRODUCTION_CORE_SERVICE: ${{ vars.MCP_PRODUCTION_CORE_SERVICE }}
+      MCP_PRODUCTION_IDENTITY_SERVICE: ${{ vars.MCP_PRODUCTION_IDENTITY_SERVICE }}
+      MCP_PRODUCTION_RESOURCE_ORIGIN: ${{ vars.MCP_PRODUCTION_RESOURCE_ORIGIN }}
+      MCP_PRODUCTION_OAUTH_ISSUER: ${{ vars.MCP_PRODUCTION_OAUTH_ISSUER }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check existing protected Production credentials before any mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN:-}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
+          echo "Production credential presence verified (values not logged)."
+
+      - name: Verify MCP protocol and Production isolation tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check adapters/mcp/src/identity-oauth-worker.mjs
+          node --test adapters/mcp/test/*.test.mjs
+
+      - name: Generate private Production config from protected environment variables
+        shell: bash
+        run: |
+          set -euo pipefail
+          node adapters/mcp/scripts/generate-private-production-config.mjs             "$GITHUB_WORKSPACE/adapters/mcp/wrangler.production.generated.jsonc"
+
+      - name: Dry-run exact private Production Worker (no public route)
+        run: >-
+          npx --yes --package wrangler@4.135.0 wrangler deploy
+          --dry-run --config adapters/mcp/wrangler.production.generated.jsonc
+          --outdir .wrangler/production-review
+
+      - name: Deploy ONLY the private Production MCP Adapter Worker
+        run: >-
+          npx --yes --package wrangler@4.135.0 wrangler deploy
+          --config adapters/mcp/wrangler.production.generated.jsonc
+
+      - name: Summarize private transport and remaining release gates
+        shell: bash
+        run: |
+          {
+            echo "## MCP Production private transport"
+            echo "- Candidate SHA: `$GITHUB_SHA` (exact successful Staging deploy)"
+            echo "- Private Adapter Worker only; workers.dev, preview URLs, public routes disabled"
+            echo "- No OAuth Resource Server secret provisioned or rotated by this workflow"
+            echo "- Core MCP_ADAPTER binding, Identity paired secret, Account and full OAuth acceptance require separate reviewed LifeSpace release gates"
+            echo "- No business data touched; MCP public service is not activated by this step"
+          } >> "$GITHUB_STEP_SUMMARY"
