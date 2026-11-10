@@ -21,6 +21,21 @@ LifeSpace Core / Identity / Generic Runtime
 
 The adapter can change protocol shape. It cannot change what the data means, who is authorized, or what a valid mutation is.
 
+## Independence and reuse-first ownership（独立性与能力复用优先）
+
+**Dependency direction（依赖方向）:** ALOHA → LifeSpace, never LifeSpace → ALOHA. LifeSpace is a standalone platform that must remain useful without ALOHA, its Gateway or any specific Agent Runtime. ALOHA owns its product-specific Agent Control, Run, interaction and orchestration and may consume independent LifeSpace contracts.
+
+Before adding a feature to MCP (or any adapter), **classify the underlying capability and whether native consumers also need it**. Define reusable LifeSpace semantics and APIs in LifeSpace first; keep product-specific execution/UI semantics in the owning product; put only protocol-specific translation and presentation in adapters. Reuse is about **one authoritative contract**, not moving every reusable feature into Core.
+
+| Example | Native semantic authority | Adapter-owned projection |
+| --- | --- | --- |
+| Structured operation outputs | LifeSpace canonical operation return and output schema | MCP `structuredContent` and `outputSchema` |
+| Async runs and cancellation | Executing product/system (ALOHA, Relay or LifeSpace's own worker if it executes the task) | MCP Tasks and progress protocol |
+| Record UI and approval | LifeSpace record/action/Delegation decisions; consumer owns native UI | MCP Apps / URL Elicitation interaction surface |
+| Change subscriptions | LifeSpace authorized events for LifeSpace-owned data | MCP `subscriptions/listen` framing |
+
+This is a **mandatory design gate** in the root [AGENTS.md](../AGENTS.md), not a requirement to implement every MCP optional extension. Any cross-consumer capability must have an explicit native owner before a protocol-specific implementation is developed.
+
 ## 2. Ownership boundary（所有权边界）
 
 | Concern | Owner |
