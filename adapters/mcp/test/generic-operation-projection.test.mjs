@@ -35,7 +35,7 @@ test("one uniform tool contract for Kernel Person, dynamic External, Native and 
     assert.equal(tool.annotations.readOnlyHint,read,tool.name);
   }
   for(const [name,binding] of Object.entries(result.bindings)){
-    assert.deepEqual(Object.keys(binding).sort(),["kind","operationRef","requiredScopes","spaceId"].sort(),name);
+    assert.deepEqual(Object.keys(binding).sort(),["kind","modelKey","operationRef","requiredScopes","spaceId"].sort(),name);
     const input={spaceId,data:{title:"Synthetic only"}};
     const op=buildCoreOperation(binding,input);
     assert.equal(op.method,"POST");
