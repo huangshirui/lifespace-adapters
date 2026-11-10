@@ -509,6 +509,17 @@ function delegatedCoreOperation(spaceId, args) {
   return {method:args.operation==="update"?"PATCH":"DELETE",path:base+"/"+encodeURIComponent(id),body:args.data};
 }
 
+// Resources are protocol views of current Core-owned semantic descriptors.
+// A Resource URI is not permission; a fresh Core projection gates each read.
+function authorizedModelResources(projected,spaceId) {
+  const keys=new Set(Object.values(projected.bindings).map(b=>b.modelKey));
+  return [...keys].sort().map(key=>({
+    uri:"lifespace://spaces/"+spaceId+"/models/"+key,
+    name:key,title:"LifeSpace model "+key,
+    description:"Current Core-owned semantic descriptor for an authorized Space model",
+    mimeType:"application/json",
+  }));
+}
 function validOrigin(request, config) {
   const header = request.headers.get("origin");
   return header === null || header === config.origin;
@@ -599,8 +610,9 @@ function modernRequestError(request, message) {
     || Array.isArray(meta["io.modelcontextprotocol/clientCapabilities"])) {
     return { modern: true, error: rpcError(message.id, -32020, "Header mismatch or missing modern request metadata", 400) };
   }
-  if (message.method === "tools/call") {
-    if (decodeMcpName(request.headers.get("mcp-name")) !== params?.name) {
+  if (message.method === "tools/call" || message.method === "resources/read") {
+    const named=message.method==="tools/call"?params?.name:params?.uri;
+    if (decodeMcpName(request.headers.get("mcp-name")) !== named) {
       return { modern: true, error: rpcError(message.id, -32020, "Mcp-Name header mismatch", 400) };
     }
   }
@@ -662,7 +674,8 @@ export async function handleIdentityOAuthMcp(request, env) {
   if (modern && message.id !== undefined && message.method === "server/discover") {
     return rpcResult(message.id, {
       supportedVersions: SUPPORTED_VERSIONS,
-      capabilities: { tools: { listChanged: false } },
+      capabilities: { tools: { listChanged: false },
+        resources: { listChanged: false, subscribe: false } },
       ttlMs: 0, cacheScope: "private",
     }, true);
   }
@@ -673,13 +686,14 @@ export async function handleIdentityOAuthMcp(request, env) {
   if (!modern && message.method === "initialize") {
     return rpcResult(message.id, {
       protocolVersion: VERSION,
-      capabilities: { tools: { listChanged: false } },
+      capabilities: { tools: { listChanged: false },
+        resources: { listChanged: false, subscribe: false } },
       serverInfo: SERVER_INFO,
     });
   }
   if (!modern && message.method === "ping") return rpcResult(message.id, {});
 
-  if (message.method !== "tools/list" && message.method !== "tools/call") {
+  if (!["tools/list","tools/call","resources/list","resources/read"].includes(message.method)) {
     return rpcError(message.id, -32601, "Method not found", modern ? 404 : 200);
   }
   const execution = await coreExecution(authorized, request, config, env);
@@ -695,6 +709,41 @@ export async function handleIdentityOAuthMcp(request, env) {
     return rpcResult(message.id, { tools: [...current.projected.tools,
       ...(authorized.context.mayRequestDelegation ? userDelegationTools() : [])],
       ...(modern ? { ttlMs: 0, cacheScope: "private" } : {}) }, modern);
+  }
+
+  if (message.method==="resources/list") {
+    if (message.params && (typeof message.params!=="object" || Array.isArray(message.params)
+      || Object.keys(message.params).some(k=>k!=="cursor" && !(modern && k==="_meta"))
+      || message.params.cursor))
+      return rpcError(message.id,-32602,"Unsupported resource pagination parameters");
+    return rpcResult(message.id,{
+      resources:authorizedModelResources(current.projected,authorized.context.spaceId),
+      ...(modern?{ttlMs:0,cacheScope:"private"}:{}),
+    },modern);
+  }
+  if (message.method==="resources/read") {
+    if(!message.params || typeof message.params!=="object" || Array.isArray(message.params)
+      || Object.keys(message.params).some(k=>k!=="uri" && !(modern && k==="_meta"))
+      || typeof message.params.uri!=="string")
+      return rpcError(message.id,-32602,"Invalid Resource URI");
+    const resource=authorizedModelResources(current.projected,authorized.context.spaceId)
+      .find(x=>x.uri===message.params.uri);
+    if(!resource)return rpcError(message.id,-32602,"Resource unavailable");
+    const path="/api/v1/spaces/"+encodeURIComponent(authorized.context.spaceId)
+      +"/_discovery/models/"+encodeURIComponent(resource.name);
+    const result=await coreJson(env,execution.token,path);
+    if(result.error) {
+      if(result.error==="CORE_NOT_FOUND"||result.error==="CORE_PERMISSION_DENIED")
+        return rpcError(message.id,-32602,"Resource unavailable");
+      return json({error:result.error},503);
+    }
+    const value=result.payload?.data;
+    if(!value || typeof value!=="object" || Array.isArray(value)
+      || value.key!==resource.name)return json({error:"CORE_RESOURCE_INVALID"},503);
+    return rpcResult(message.id,{
+      contents:[{uri:resource.uri,mimeType:"application/json",text:JSON.stringify(value)}],
+      ...(modern?{ttlMs:0,cacheScope:"private"}:{}),
+    },modern);
   }
 
   if (!message.params || typeof message.params !== "object" || Array.isArray(message.params)
