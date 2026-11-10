@@ -449,7 +449,7 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
         if (op === "delete") return new Response(null,{status:204});
         return Response.json({data:{id:"rec_synthetic",version:1}},{status:op==="create"?201:200});
       }
-      const resourceModel=/^\\/api\\/v1\\/spaces\\/spc_synthetic\\/_discovery\\/models\\/(task(?:_[0-9]{2})?)$/u.exec(path);
+      const resourceModel=/^\/api\/v1\/spaces\/spc_synthetic\/_discovery\/models\/(task(?:_[0-9]{2})?)$/u.exec(path);
       if(resourceModel){
         if(modelDetailStatus!==200)return Response.json({error:"synthetic private metadata"},{status:modelDetailStatus});
         return Response.json({data:{...detail.data,key:resourceModel[1]}});
