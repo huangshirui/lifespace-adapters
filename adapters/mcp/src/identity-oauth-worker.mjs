@@ -257,8 +257,14 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
         : mutationPath ? "INVALID_MUTATION_ARGUMENTS" : "INVALID_QUERY_ARGUMENTS" };
     }
     if ((genericCommand || delegatedAction || delegatedPerson || mutationPath) && response.status === 409) return { error: "RECORD_VERSION_CONFLICT" };
+    // Do not forward private Core response bodies. Map status to stable,
+    // intentionally coarse error categories; hidden records stay hidden.
     return { error: response.status === 401 || response.status === 403
-      ? "CORE_PERMISSION_DENIED" : "CORE_UNAVAILABLE" };
+      ? "CORE_PERMISSION_DENIED"
+      : response.status === 404 ? "CORE_NOT_FOUND"
+      : response.status === 409 ? "RECORD_VERSION_CONFLICT"
+      : response.status === 429 ? "CORE_RATE_LIMITED"
+      : "CORE_UNAVAILABLE" };
   }
   if (response.status === 204) return { payload: { data: { deleted: true } } };
   let raw;
@@ -508,6 +514,18 @@ function validOrigin(request, config) {
   return header === null || header === config.origin;
 }
 
+// Legacy content stays unchanged, while successful Core results also expose
+// an MCP structuredContent object (compatible with both protocol eras).
+// No model-specific output schema is fabricated by this protocol adapter.
+function coreToolResult(outcome) {
+  if (outcome.error) return {isError:true,
+    content:[{type:"text",text:outcome.error}]};
+  const value=outcome.payload?.data ?? outcome.payload ?? null;
+  const structuredContent=value!==null && typeof value==="object"
+    && !Array.isArray(value) ? value : {data:value};
+  return {content:[{type:"text",text:JSON.stringify(value)}],
+    structuredContent};
+}
 function rpcResult(id, result, modern = false) {
   return json({ jsonrpc: "2.0", id, result: modern
     ? {
@@ -774,10 +792,7 @@ export async function handleIdentityOAuthMcp(request, env) {
         url:pending.approvalUrl,modelKey:args.modelKey,operation:args.operation,
       },modern);
     }
-    return rpcResult(message.id,{
-      ...(outcome.error ? {isError:true} : {}),
-      content:[{type:"text",text: outcome.error||JSON.stringify(outcome.payload?.data??outcome.payload)}],
-    },modern);
+    return rpcResult(message.id,coreToolResult(outcome),modern);
   }
   const binding = current.projected.bindings[message.params.name];
   if (!binding) return rpcError(message.id, -32602, "Tool is not in the currently authorized projection");
@@ -793,12 +808,7 @@ export async function handleIdentityOAuthMcp(request, env) {
     return rpcError(message.id, -32602, "Selected Space mismatch");
   }
   const result = await coreJson(env, execution.token, operation.path, operation.method, operation.body);
-  if (result.error) return rpcResult(message.id, {
-    isError: true, content: [{ type: "text", text: result.error }],
-  }, modern);
-  return rpcResult(message.id, {
-    content: [{ type: "text", text: JSON.stringify(result.payload?.data ?? result.payload) }],
-  }, modern);
+  return rpcResult(message.id,coreToolResult(result),modern);
 }
 
 export default { fetch: handleIdentityOAuthMcp };
