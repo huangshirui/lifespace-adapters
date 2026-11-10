@@ -613,6 +613,7 @@ test("OAuth MCP tools/call executes Canonical Query on the selected Space with c
   assert.equal(result.status, 200);
   const resultBody = await result.json();
   assert.deepEqual(JSON.parse(resultBody.result.content[0].text), { items: [{ title: "Synthetic only" }] });
+  assert.deepEqual(resultBody.result.structuredContent, { items: [{ title: "Synthetic only" }] });
   const coreQuery = f.calls.find(x => /\/_operations\/op_[a-f0-9]{64}\/invoke$/u.test(x.path));
   assert.equal(coreQuery.init.method, "POST");
   assert.deepEqual(JSON.parse(coreQuery.init.body), { arguments: {
@@ -649,6 +650,38 @@ test("revoking an OAuth Authorization invalidates cached MCP tool calls without 
     "/oauth/introspect", "/oauth/introspect", "/oauth/introspect",
   ]);
   assert.equal(f.calls.filter(call => call.path.endsWith("/records/query")).length, 0);
+});
+
+test("legacy and stateless modern MCP Tool results include backward-compatible structuredContent", async () => {
+  for(const modern of [false,true]) {
+    const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write",
+      mutations:true,advertisedAccess:["read","write"]});
+    const req=modern
+      ?modernRpc("tools/call",{params:{name:"lifespace.create.task",
+        arguments:{spaceId:"spc_synthetic",data:{name:"Synthetic only"}}}})
+      :rpc("tools/call",{params:{name:"lifespace.create.task",
+        arguments:{spaceId:"spc_synthetic",data:{name:"Synthetic only"}}}});
+    const response=await handleIdentityOAuthMcp(req,f.env);
+    assert.equal(response.status,200);
+    const result=(await response.json()).result;
+    assert.deepEqual(result.structuredContent,{id:"rec_synthetic",version:1});
+    assert.deepEqual(JSON.parse(result.content[0].text),result.structuredContent);
+    if(modern)assert.equal(result.resultType,"complete");
+  }
+});
+
+test("User Delegation success retains original text while exposing Core-backed structuredContent", async () => {
+  const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write"});
+  const response=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.request_user_delegation",arguments:{
+      modelKey:"task",operation:"create",reason:"Synthetic approval",
+    },
+  }}),f.env);
+  const result=(await response.json()).result;
+  assert.equal(result.structuredContent.status,"pending");
+  assert.equal(result.structuredContent.id,"arq_"+"f".repeat(32));
+  assert.deepEqual(JSON.parse(result.content[0].text),result.structuredContent);
+  assert.ok(!JSON.stringify(result).includes(TOKEN));
 });
 
 test("OAuth read/write consent and a write-capable Core preview cannot widen read-only MCP execution", async () => {
@@ -728,7 +761,8 @@ test("Core Canonical Query 400/422 becomes a bounded MCP invalid-arguments tool 
 test("Core permission failures, upstream outages and discovery errors remain fail-closed", async () => {
   for (const [queryStatus, expected] of [
     [401, "CORE_PERMISSION_DENIED"], [403, "CORE_PERMISSION_DENIED"],
-    [429, "CORE_UNAVAILABLE"], [500, "CORE_UNAVAILABLE"],
+    [404, "CORE_NOT_FOUND"], [409, "RECORD_VERSION_CONFLICT"],
+    [429, "CORE_RATE_LIMITED"], [500, "CORE_UNAVAILABLE"],
   ]) {
     const f = connectedFixture({ queryStatus });
     const response = await handleIdentityOAuthMcp(rpc("tools/call", {
@@ -738,6 +772,7 @@ test("Core permission failures, upstream outages and discovery errors remain fai
     const payload = await response.json();
     assert.equal(payload.result.isError, true);
     assert.equal(payload.result.content[0].text, expected);
+    assert.equal(payload.result.structuredContent, undefined);
     assert.ok(!JSON.stringify(payload).includes("SYNTHETIC_PRIVATE_ERROR"));
   }
   const interrupted = connectedFixture({ queryThrows: true });
