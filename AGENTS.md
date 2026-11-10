@@ -4,6 +4,33 @@ LifeSpace Adapters is the protocol-adaptation layer around LifeSpace. It transla
 
 The first adapter is MCP（Model Context Protocol，模型上下文协议）. Future protocol adapters may be added only when they have a real consumer and a clear boundary.
 
+## Mandatory first decision: reusable capability ownership（需求先判定可复用能力与归属）
+
+**Before implementing ANY adapter request**, including work described as an MCP feature, first determine whether it represents a reusable capability. This is a mandatory architecture gate, not a later code-review suggestion.
+
+### Project independence（项目独立性）
+
+- **LifeSpace is an independent platform（LifeSpace 是独立平台）**: its identity, permissions, domain, operation contracts, events and deployments must remain usable and testable without ALOHA. LifeSpace MUST NOT import, depend on, or require ALOHA-specific packages, services, Runtime implementations, UI, or configuration.
+- **ALOHA is an independent consumer/product（ALOHA 是独立应用）**: ALOHA may depend on LifeSpace through public, versioned contracts for its foundation, but owns its own Agent Control, conversations/runs, user-facing interactions and runtime orchestration. Do not move ALOHA product semantics into LifeSpace solely to support a protocol adapter.
+- **Adapters are independent of consuming products（Adapter 不绑定具体消费者）**: MCP, n8n, native API clients and future adapters should be able to reuse LifeSpace platform capabilities without depending on ALOHA or each other. An individual consumer request does not establish a platform requirement by itself.
+
+### Required triage before coding（每项需求先完成归属判定）
+
+1. **Identify the underlying capability（识别真实能力）**: strip away MCP/HTTP/UI names. Ask whether native LifeSpace API clients, HomeMew, ALOHA, n8n or another protocol could reasonably need the same semantics, contract, result, state or policy.
+2. **Assign one semantic owner（确定唯一语义所有者）**:
+   - Reusable LifeSpace platform/domain/authorization/operation/record/event semantics belong to the canonical **LifeSpace Core / Identity** contract and implementation.
+   - A product's own conversations, Agent Runs, business workflows, UI interaction policy and long-lived orchestration belong to **that product or execution system** (e.g. ALOHA or Relay), not automatically to LifeSpace.
+   - Only protocol encoding, transport, schema projection, protocol-specific UI packaging, compatibility and error framing belong to **this Adapter**.
+3. **Native contract first（先原生契约，后协议映射）**: if reusable LifeSpace semantics or lifecycle are missing, first propose/implement the canonical upstream API/event/operation contract in LifeSpace, then project it here. Follow the owning repository's AGENTS.md before making upstream changes. Never implement the reusable behavior only inside MCP (or any single adapter) or create an adapter-local shadow authority/state.
+4. **Adapter-only exception requires evidence（协议专属例外需说明）**: if work is genuinely protocol-specific, state why a native consumer has no corresponding domain contract to reuse. A mere MCP feature name is not sufficient evidence.
+5. **Record the decision（记录归属）**: every non-trivial PR/implementation plan must state the reusable-capability assessment, semantic owner, native contract (or why none is needed), adapter projection boundary, and cross-client tests or compatibility implications. If ownership is unresolved, clarify the design before adding code.
+
+**Examples（示例）**:
+- Structured tool output: LifeSpace owns canonical operation results and output schemas; MCP maps them to `structuredContent`/`outputSchema`. Do not invent output semantics in the Adapter.
+- Task extension: a durable task/run state machine belongs to the system executing that task. An ALOHA Run must NOT become a LifeSpace dependency; an MCP Tasks wrapper may project an existing authorized task contract.
+- Record preview and approval UI: LifeSpace owns record/action semantics and authoritative Delegation state; ALOHA/HomeMew own their native presentation; MCP Apps/Elicitation own third-party presentation and transport, never approval authority.
+- Resource subscriptions: a reusable authorized change/event feed belongs to its data owner; MCP `subscriptions/listen` is only one consumer projection.
+
 ## Open-source and public-repository safety model（开源与公开仓库安全模型）
 
 This is a **public open-source repository（公开开源仓库）**. Treat every tracked file, Commit（提交）, Branch（分支）, Pull Request（拉取请求）, Issue（议题）, Review Comment（评审评论）, CI Log / Artifact（持续集成日志 / 产物）, Fixture（测试夹具）, generated example and documentation snippet as if it can become public and permanently indexed.
@@ -32,7 +59,7 @@ Runtime secrets and live configuration must be injected through deployment/platf
 
 Read in this order:
 
-1. `README.md` for repository purpose, scope and current status;
+1. **Perform the mandatory reusable-capability/owner triage above before deciding where to implement the request**, then read `README.md` for repository purpose, scope and current status;
 2. `docs/architecture.md` for ownership and adapter boundaries;
 3. `docs/lifespace-contract-consumption.md` for canonical LifeSpace contract-consumption rules;
 4. the relevant adapter document, currently `docs/mcp-adapter.md`;
@@ -143,6 +170,7 @@ Before declaring a change complete:
 3. add positive, deny/error and stale/revoked-authority tests appropriate to the change;
 4. run repository CI/checks that apply;
 5. perform a Public-repository Safety Pass（公开仓库安全检查） over the diff and generated output;
-6. confirm no LifeSpace domain/authorization rule was duplicated into adapter code.
+6. confirm no LifeSpace domain/authorization rule was duplicated into adapter code;
+7. document the reuse/ownership gate decision (LifeSpace native contract vs product-owned capability vs adapter-only transport) and verify the resulting dependency direction remains LifeSpace-independent-of-ALOHA.
 
 If a required check cannot be run, state that explicitly and do not describe the behavior as verified.
