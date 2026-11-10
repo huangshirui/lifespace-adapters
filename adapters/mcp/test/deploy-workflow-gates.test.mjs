@@ -36,3 +36,13 @@ test("Production summary never executes a candidate SHA as a shell command", () 
   assert.ok(production.includes('echo "- Candidate SHA: $GITHUB_SHA (exact successful Staging deploy)"'));
   assert.ok(!production.includes('echo "- Candidate SHA: `$GITHUB_SHA`'));
 });
+
+
+test("private Production first deploy atomically installs the protected OAuth secret", () => {
+  assert.match(production, /secrets\.MCP_PRODUCTION_OAUTH_RESOURCE_SERVER_SECRET/u);
+  assert.match(production, /--secrets-file "\$SECRET_FILE"/u);
+  assert.match(production, /trap 'rm -f "\$SECRET_FILE"' EXIT/u);
+  assert.match(production, /OAUTH_RESOURCE_SERVER_SECRET:value/u);
+  assert.doesNotMatch(production, /wrangler secret put OAUTH_RESOURCE_SERVER_SECRET/u);
+  assert.doesNotMatch(production, /workers_dev: true/u);
+});
