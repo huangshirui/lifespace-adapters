@@ -58,7 +58,8 @@ function modernRpc(method, opts = {}) {
       authorization: "Bearer " + TOKEN,
       "MCP-Protocol-Version": "2026-07-28",
       "Mcp-Method": method,
-      ...(method === "tools/call" ? { "Mcp-Name": params.name } : {}),
+      ...(["tools/call","resources/read"].includes(method)
+        ? { "Mcp-Name": method==="tools/call"?params.name:params.uri } : {}),
       ...(opts.headers || {}),
     },
     body: JSON.stringify({ jsonrpc: "2.0", id: 42, method, params }),
@@ -307,7 +308,7 @@ test("host-origin mismatch, CORS origin, query/path confusion and wrong transpor
 });
 
 
-function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", introspectionOverrides = {} } = {}) {
+function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", introspectionOverrides = {}, modelDetailStatus = 200 } = {}) {
   const calls = [];
   let tokenActive = true;
   let currentApprovalStatus=approvalStatus;
@@ -447,6 +448,11 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
         if (mutationStatus !== 201) return Response.json({error:"synthetic write failure"},{status:mutationStatus});
         if (op === "delete") return new Response(null,{status:204});
         return Response.json({data:{id:"rec_synthetic",version:1}},{status:op==="create"?201:200});
+      }
+      const resourceModel=/^\/api\/v1\/spaces\/spc_synthetic\/_discovery\/models\/(task(?:_[0-9]{2})?)$/u.exec(path);
+      if(resourceModel){
+        if(modelDetailStatus!==200)return Response.json({error:"synthetic private metadata"},{status:modelDetailStatus});
+        return Response.json({data:{...detail.data,key:resourceModel[1]}});
       }
       if (path === "/api/v1/me/_discovery/inventory") {
         if (discoveryStatus !== 200) return Response.json({ error: "synthetic upstream details" }, { status: discoveryStatus });
@@ -598,6 +604,72 @@ test("tools/list projects 20 authorized Models in one Core batch request, not 20
   assert.deepEqual(f.calls.filter(x => x.service === "CORE").map(x => x.path), [
     "/api/v1/spaces/spc_synthetic/_discovery/operations",
   ]);
+});
+
+test("MCP model Resources are dynamic Core-authorized semantic descriptors", async () => {
+  for(const modern of [false,true]){
+    const f=connectedFixture({modelCount:2});
+    const list=await handleIdentityOAuthMcp(modern?modernRpc("resources/list"):rpc("resources/list"),f.env);
+    assert.equal(list.status,200);
+    const body=(await list.json()).result;
+    const uri="lifespace://spaces/spc_synthetic/models/task_00";
+    assert.deepEqual(body.resources.map(r=>r.uri),[
+      uri,"lifespace://spaces/spc_synthetic/models/task_01",
+    ]);
+    assert.ok(body.resources.every(r=>r.mimeType==="application/json"));
+    if(modern){
+      assert.equal(body.ttlMs,0);
+      assert.equal(body.cacheScope,"private");
+      assert.equal(body.resultType,"complete");
+    }
+    const read=await handleIdentityOAuthMcp(modern
+      ? modernRpc("resources/read",{params:{uri}})
+      : rpc("resources/read",{params:{uri}}),f.env);
+    assert.equal(read.status,200);
+    const data=(await read.json()).result;
+    assert.equal(data.contents[0].uri,uri);
+    assert.equal(data.contents[0].mimeType,"application/json");
+    const descriptor=JSON.parse(data.contents[0].text);
+    assert.equal(descriptor.key,"task_00");
+    assert.equal(descriptor.version,3);
+    assert.ok(descriptor.query.canonical);
+    if(modern)assert.deepEqual([data.ttlMs,data.cacheScope],[0,"private"]);
+    assert.equal(f.calls.some(x=>x.service==="CORE"
+      &&x.path==="/api/v1/spaces/spc_synthetic/_discovery/models/task_00"),true);
+    assert.ok(!JSON.stringify(data).includes(TOKEN));
+  }
+});
+
+test("MCP Resources never broaden model, Space, OAuth, or header authority", async () => {
+  const f=connectedFixture({advertisedAccess:[]});
+  const listed=await handleIdentityOAuthMcp(rpc("resources/list"),f.env);
+  assert.deepEqual((await listed.json()).result.resources,[]);
+  const uri="lifespace://spaces/spc_synthetic/models/task";
+  for(const malformed of [
+    uri,"lifespace://spaces/spc_other/models/task","lifespace://spaces/spc_synthetic/models/secret",
+  ]){
+    const failed=await handleIdentityOAuthMcp(rpc("resources/read",{params:{uri:malformed}}),f.env);
+    assert.equal((await failed.json()).error.code,-32602);
+  }
+  assert.equal(f.calls.some(x=>x.service==="CORE"&&x.path.includes("/_discovery/models/task")),false);
+  const authorized=connectedFixture();
+  const missing=await handleIdentityOAuthMcp(modernRpc("resources/read",{
+    params:{uri},headers:{"Mcp-Name":"lifespace://spaces/spc_other/models/task"},
+  }),authorized.env);
+  assert.equal(missing.status,400);
+  assert.equal((await missing.json()).error.code,-32020);
+  assert.equal(authorized.calls.filter(x=>x.service==="CORE").length,0);
+  const absent=connectedFixture({modelDetailStatus:404});
+  const unknown=await handleIdentityOAuthMcp(rpc("resources/read",{params:{uri}}),absent.env);
+  assert.equal((await unknown.json()).error.code,-32602);
+  assert.ok(!JSON.stringify(await handleIdentityOAuthMcp(rpc("resources/read",{params:{uri}}),absent.env)).includes("synthetic private metadata"));
+  const revoke=connectedFixture();
+  const before=await handleIdentityOAuthMcp(rpc("resources/list"),revoke.env);
+  assert.equal((await before.json()).result.resources.length,1);
+  revoke.revokeOAuth();
+  const denied=await handleIdentityOAuthMcp(rpc("resources/read",{params:{uri}}),revoke.env);
+  assert.equal(denied.status,401);
+  assert.equal(revoke.calls.some(x=>x.service==="CORE"&&x.path.includes("/_discovery/models/task")),false);
 });
 
 test("OAuth MCP tools/call executes Canonical Query on the selected Space with current Core authority", async () => {
