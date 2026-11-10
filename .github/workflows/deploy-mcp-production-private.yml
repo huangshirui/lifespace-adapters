@@ -78,6 +78,7 @@ jobs:
       MCP_PRODUCTION_IDENTITY_SERVICE: ${{ vars.MCP_PRODUCTION_IDENTITY_SERVICE }}
       MCP_PRODUCTION_RESOURCE_ORIGIN: ${{ vars.MCP_PRODUCTION_RESOURCE_ORIGIN }}
       MCP_PRODUCTION_OAUTH_ISSUER: ${{ vars.MCP_PRODUCTION_OAUTH_ISSUER }}
+      MCP_PRODUCTION_OAUTH_RESOURCE_SERVER_SECRET: ${{ secrets.MCP_PRODUCTION_OAUTH_RESOURCE_SERVER_SECRET }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -91,7 +92,9 @@ jobs:
           set -euo pipefail
           test -n "${CLOUDFLARE_API_TOKEN:-}"
           test -n "${CLOUDFLARE_ACCOUNT_ID:-}"
-          echo "Production credential presence verified (values not logged)."
+          test "${#MCP_PRODUCTION_OAUTH_RESOURCE_SERVER_SECRET}" -ge 32
+          echo "::add-mask::$MCP_PRODUCTION_OAUTH_RESOURCE_SERVER_SECRET"
+          echo "Production Cloudflare and independent OAuth resource secret presence verified (values not logged)."
 
       - name: Verify MCP protocol and Production isolation tests
         shell: bash
@@ -112,10 +115,24 @@ jobs:
           --dry-run --config adapters/mcp/wrangler.production.generated.jsonc
           --outdir .wrangler/production-review
 
-      - name: Deploy ONLY the private Production MCP Adapter Worker
-        run: >-
-          npx --yes --package wrangler@4.135.0 wrangler deploy
-          --config adapters/mcp/wrangler.production.generated.jsonc
+      - name: Deploy ONLY private Adapter with first-use protected OAuth secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          # --secrets-file provisions the secret atomically with the first
+          # private Worker deployment. File never enters git or an artifact.
+          SECRET_FILE="$(mktemp "$RUNNER_TEMP/lifespace-private-oauth-XXXXXX")"
+          chmod 600 "$SECRET_FILE"
+          trap 'rm -f "$SECRET_FILE"' EXIT
+          node --input-type=module -e '
+            import { writeFileSync } from "node:fs";
+            const value=process.env.MCP_PRODUCTION_OAUTH_RESOURCE_SERVER_SECRET;
+            if(!value||value.length<32)throw Error("Protected Resource Secret missing");
+            writeFileSync(process.argv[1], JSON.stringify({ OAUTH_RESOURCE_SERVER_SECRET:value }), {mode:0o600});
+          ' "$SECRET_FILE"
+          npx --yes --package wrangler@4.135.0 wrangler deploy \
+            --config adapters/mcp/wrangler.production.generated.jsonc \
+            --secrets-file "$SECRET_FILE"
 
       - name: Summarize private transport and remaining release gates
         shell: bash
@@ -124,7 +141,7 @@ jobs:
             echo "## MCP Production private transport"
             echo "- Candidate SHA: $GITHUB_SHA (exact successful Staging deploy)"
             echo "- Private Adapter Worker only; workers.dev, preview URLs, public routes disabled"
-            echo "- No OAuth Resource Server secret provisioned or rotated by this workflow"
+            echo "- Protected OAuth Resource Server secret provisioned with the private Worker from the independent Production environment"
             echo "- Core MCP_ADAPTER binding, Identity paired secret, Account and full OAuth acceptance require separate reviewed LifeSpace release gates"
             echo "- No business data touched; MCP public service is not activated by this step"
           } >> "$GITHUB_STEP_SUMMARY"
