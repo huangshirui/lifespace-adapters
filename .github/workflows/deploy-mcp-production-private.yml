@@ -51,6 +51,19 @@ jobs:
               and .status == "completed"
               and .conclusion == "success")] | length > 0'
           echo "Exact candidate Staging deployment verified."
+      - name: Require successful exact-SHA main CI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUNS="$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f branch=main -f event=push -f head_sha="$GITHUB_SHA" -f per_page=100)"
+          echo "$RUNS" | jq -e --arg sha "$GITHUB_SHA" \
+            '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main"
+              and .event == "push" and .status == "completed"
+              and .conclusion == "success")] | length > 0'
+          echo "Exact-SHA main CI succeeded."
 
   prepare:
     needs: validate
@@ -109,7 +122,7 @@ jobs:
         run: |
           {
             echo "## MCP Production private transport"
-            echo "- Candidate SHA: `$GITHUB_SHA` (exact successful Staging deploy)"
+            echo "- Candidate SHA: $GITHUB_SHA (exact successful Staging deploy)"
             echo "- Private Adapter Worker only; workers.dev, preview URLs, public routes disabled"
             echo "- No OAuth Resource Server secret provisioned or rotated by this workflow"
             echo "- Core MCP_ADAPTER binding, Identity paired secret, Account and full OAuth acceptance require separate reviewed LifeSpace release gates"
