@@ -1090,7 +1090,15 @@ test("MCP MRTR refuses tampered, cross-context and declined URL-approval continu
     }}),fixture.env);
     return response.json();
   }
-  assert.equal((await retry({requestState:state.slice(0,-1)+"A"})).error.code,-32602);
+  // Mutate the first HMAC signature byte, not its final base64url character:
+  // the old last-character substitution could be a no-op or alter only padding bits.
+  const signatureStart=state.indexOf(".")+1;
+  assert.ok(signatureStart>0 && signatureStart<state.length);
+  const tamperedState=state.slice(0,signatureStart)
+    +(state[signatureStart]==="A"?"B":"A")+state.slice(signatureStart+1);
+  assert.notEqual(tamperedState,state);
+  const tampered=await retry({requestState:tamperedState});
+  assert.equal(tampered.error?.code,-32602,JSON.stringify(tampered));
   assert.equal((await retry({arguments:{...args,reason:"Unapproved different intent"}})).error.code,-32602);
   const changedClient=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write",
     introspectionOverrides:{client_id:"ocli_other_synthetic"}});
