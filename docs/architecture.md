@@ -25,16 +25,16 @@ The adapter can change protocol shape. It cannot change what the data means, who
 
 **Dependency direction（依赖方向）:** ALOHA → LifeSpace, never LifeSpace → ALOHA. LifeSpace is a standalone platform that must remain useful without ALOHA, its Gateway or any specific Agent Runtime. ALOHA owns its product-specific Agent Control, Run, interaction and orchestration and may consume independent LifeSpace contracts.
 
-Before adding a feature to MCP (or any adapter), **classify the underlying capability and whether native consumers also need it**. Define reusable LifeSpace semantics and APIs in LifeSpace first; keep product-specific execution/UI semantics in the owning product; put only protocol-specific translation and presentation in adapters. Reuse is about **one authoritative contract**, not moving every reusable feature into Core.
+Before adding a feature to MCP (or any adapter), **classify whether its underlying semantics are clearly stable and genuinely need a common owner**. The default is independent evolution: LifeSpace as a minimal shared-facts/authority/change foundation; ALOHA as an independent Agent product; MCP Adapter as an independently evolving protocol projection. **Do not turn a fast-moving MCP experiment or an ALOHA feature into a Core dependency merely because future reuse seems plausible.** Before introducing new Core API/state, prove that existing contracts are insufficient, the semantics are stable, and the platform is the necessary authority. Otherwise retain the feature in the owning upper layer and compose existing LifeSpace contracts.
 
 | Example | Native semantic authority | Adapter-owned projection |
 | --- | --- | --- |
-| Structured operation outputs | LifeSpace canonical operation return and output schema | MCP `structuredContent` and `outputSchema` |
+| Structured operation outputs | Existing LifeSpace typed records/model contracts and native results; new platform schema only if stable and necessary | MCP `structuredContent`; `outputSchema` only when grounded in an existing/stable contract |
 | Async runs and cancellation | Executing product/system (ALOHA, Relay or LifeSpace's own worker if it executes the task) | MCP Tasks and progress protocol |
 | Record UI and approval | LifeSpace record/action/Delegation decisions; consumer owns native UI | MCP Apps / URL Elicitation interaction surface |
-| Change subscriptions | LifeSpace authorized events for LifeSpace-owned data | MCP `subscriptions/listen` framing |
+| Change subscriptions | Existing LifeSpace authoritative events where available; new event feed only with independent platform demand | MCP `subscriptions/listen` streaming/reconnect and delivery semantics |
 
-This is a **mandatory design gate** in the root [AGENTS.md](../AGENTS.md), not a requirement to implement every MCP optional extension. Any cross-consumer capability must have an explicit native owner before a protocol-specific implementation is developed.
+This is a **mandatory design gate** in the root [AGENTS.md](../AGENTS.md), not a requirement to implement every MCP optional extension. The platform boundary is **minimal and stable**, not an aggregation of every cross-consumer possibility. Adapter and product experiments may remain separate indefinitely, provided they enforce LifeSpace authority at the data/mutation boundary and do not duplicate its underlying facts.
 
 ## 2. Ownership boundary（所有权边界）
 
