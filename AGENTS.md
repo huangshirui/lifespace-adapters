@@ -6,7 +6,7 @@ The first adapter is MCP（Model Context Protocol，模型上下文协议）. Fu
 
 ## Mandatory first decision: reusable capability ownership（需求先判定可复用能力与归属）
 
-**Before implementing ANY adapter request**, including work described as an MCP feature, first determine whether it represents a reusable capability. This is a mandatory architecture gate, not a later code-review suggestion.
+**Before implementing ANY adapter request**, including work described as an MCP feature, first determine whether it represents a genuinely stable reusable capability. This is a mandatory architecture gate, not a later code-review suggestion. **Potential future reuse alone does NOT justify new LifeSpace Core code or contracts.** MCP/Agent client protocols and ALOHA may evolve experimentally at their own pace; LifeSpace is the minimal shared-reality and governed-change foundation, not their common feature framework.
 
 ### Project independence（项目独立性）
 
@@ -21,15 +21,20 @@ The first adapter is MCP（Model Context Protocol，模型上下文协议）. Fu
    - Reusable LifeSpace platform/domain/authorization/operation/record/event semantics belong to the canonical **LifeSpace Core / Identity** contract and implementation.
    - A product's own conversations, Agent Runs, business workflows, UI interaction policy and long-lived orchestration belong to **that product or execution system** (e.g. ALOHA or Relay), not automatically to LifeSpace.
    - Only protocol encoding, transport, schema projection, protocol-specific UI packaging, compatibility and error framing belong to **this Adapter**.
-3. **Native contract first（先原生契约，后协议映射）**: if reusable LifeSpace semantics or lifecycle are missing, first propose/implement the canonical upstream API/event/operation contract in LifeSpace, then project it here. Follow the owning repository's AGENTS.md before making upstream changes. Never implement the reusable behavior only inside MCP (or any single adapter) or create an adapter-local shadow authority/state.
-4. **Adapter-only exception requires evidence（协议专属例外需说明）**: if work is genuinely protocol-specific, state why a native consumer has no corresponding domain contract to reuse. A mere MCP feature name is not sufficient evidence.
-5. **Record the decision（记录归属）**: every non-trivial PR/implementation plan must state the reusable-capability assessment, semantic owner, native contract (or why none is needed), adapter projection boundary, and cross-client tests or compatibility implications. If ownership is unresolved, clarify the design before adding code.
+3. **Minimal stable platform gate（稳定且必要才下沉平台）**: introduce a new LifeSpace Core/Identity ability **only when ALL hold**:
+   - Its business semantics are clearly defined and sufficiently stable, not a speculative response to fast-changing MCP/Agent/UI features.
+   - It is genuinely shared by independent consumers **or** intrinsically necessary for authoritative shared facts/identity/grants/governed changes.
+   - It cannot be safely and correctly owned at an upper product, Agent runtime or protocol adapter layer without duplicating or bypassing platform authority.
+   - The smallest existing LifeSpace contract cannot already serve the use case.
+   When this gate passes, define the minimal platform-owned native contract first and project it through adapters. Follow the owning repository's AGENTS.md. Otherwise evolve the feature independently in its owning layer and avoid unnecessary Core changes.
+4. **Experimental/protocol work is independent by default（实验性协议能力默认独立）**: implement MCP wire semantics, URL Elicitation, structuredContent packaging, protocol Tasks/Apps/notifications and compatibility in the Adapter or an appropriately owned execution/presentation component when possible. Do not require ALOHA or LifeSpace Core to implement the same experiment. Reuse current Core facts and access checks; do not create shadow LifeSpace authorization, records or grants. Explain what the Adapter owns and which existing authoritative contracts it consumes.
+5. **Record the decision（记录归属）**: every non-trivial PR/implementation plan must state why reuse is **proven and stable rather than merely conceivable**, which layer owns the ability, whether an existing LifeSpace contract suffices, the Adapter-only surface, and compatibility risks. For any proposed Core expansion, explicitly justify each condition in step 3. If uncertain, keep the experiment isolated above Core; do not silently make the protocol dependency permanent.
 
 **Examples（示例）**:
-- Structured tool output: LifeSpace owns canonical operation results and output schemas; MCP maps them to `structuredContent`/`outputSchema`. Do not invent output semantics in the Adapter.
+- Structured tool output: LifeSpace owns existing canonical model/result semantics (including immutable Model Contract where applicable). MCP may independently expose `structuredContent`. Add a *new* Core output schema only if the minimal stable platform gate passes; do not infer or invent domain semantics in the Adapter.
 - Task extension: a durable task/run state machine belongs to the system executing that task. An ALOHA Run must NOT become a LifeSpace dependency; an MCP Tasks wrapper may project an existing authorized task contract.
 - Record preview and approval UI: LifeSpace owns record/action semantics and authoritative Delegation state; ALOHA/HomeMew own their native presentation; MCP Apps/Elicitation own third-party presentation and transport, never approval authority.
-- Resource subscriptions: a reusable authorized change/event feed belongs to its data owner; MCP `subscriptions/listen` is only one consumer projection.
+- Resource subscriptions: use current LifeSpace Eventing contracts when sufficient. MCP `subscriptions/listen` framing/reconnect is protocol-specific; do not add Core streaming APIs solely because MCP gained a subscription feature. New shared event contracts require independent stable demand.
 
 ## Open-source and public-repository safety model（开源与公开仓库安全模型）
 
@@ -171,6 +176,6 @@ Before declaring a change complete:
 4. run repository CI/checks that apply;
 5. perform a Public-repository Safety Pass（公开仓库安全检查） over the diff and generated output;
 6. confirm no LifeSpace domain/authorization rule was duplicated into adapter code;
-7. document the reuse/ownership gate decision (LifeSpace native contract vs product-owned capability vs adapter-only transport) and verify the resulting dependency direction remains LifeSpace-independent-of-ALOHA.
+7. document the stable-and-necessary reuse gate (including why existing platform contracts are insufficient before introducing Core changes), and verify both independence boundaries: LifeSpace does not depend on ALOHA or MCP evolution, and each client/protocol can evolve without lockstep releases.
 
 If a required check cannot be run, state that explicitly and do not describe the behavior as verified.
