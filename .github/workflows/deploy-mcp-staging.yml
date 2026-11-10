@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: lifespace-mcp-adapter-staging
@@ -24,6 +25,19 @@ jobs:
           test "$GITHUB_ACTOR" = huangshirui
           test "$GITHUB_TRIGGERING_ACTOR" = huangshirui
           test "$GITHUB_REF_NAME" = main
+      - name: Require successful exact-SHA main CI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUNS="$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f branch=main -f event=push -f head_sha="$GITHUB_SHA" -f per_page=100)"
+          echo "$RUNS" | jq -e --arg sha "$GITHUB_SHA" \
+            '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main"
+              and .event == "push" and .status == "completed"
+              and .conclusion == "success")] | length > 0'
+          echo "Exact-SHA main CI succeeded."
   deploy:
     needs: guard
     runs-on: ubuntu-latest
