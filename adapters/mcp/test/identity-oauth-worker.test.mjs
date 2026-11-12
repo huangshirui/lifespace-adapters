@@ -308,7 +308,7 @@ test("host-origin mismatch, CORS origin, query/path confusion and wrong transpor
 });
 
 
-function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", introspectionOverrides = {}, modelDetailStatus = 200 } = {}) {
+function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", introspectionOverrides = {}, modelDetailStatus = 200, ignoreCatalogFilter = false } = {}) {
   const calls = [];
   let tokenActive = true;
   let currentApprovalStatus=approvalStatus;
@@ -425,7 +425,10 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       if (path === "/api/v1/spaces/spc_synthetic/_discovery/operations") {
         if (discoveryStatus !== 200)
           return Response.json({error:"synthetic Core unavailability"},{status:discoveryStatus});
-        return Response.json({data:{operations:syntheticCatalog}});
+        const params=new URL(url).searchParams;
+        const model=params.get("modelKey"),op=params.get("operation");
+        return Response.json({data:{operations:syntheticCatalog.filter(row=>
+          ignoreCatalogFilter||((!model||row.modelKey===model)&&(!op||row.operation===op)))}});
       }
       const invocation = /^\/api\/v1\/spaces\/spc_synthetic\/_operations\/(op_[a-f0-9]{64})\/invoke$/u.exec(path);
       if (invocation) {
@@ -556,7 +559,10 @@ test("modern tools/list and tools/call use per-request metadata and batched Core
   const result = (await called.json()).result;
   assert.equal(result.resultType, "complete");
   assert.equal(JSON.parse(result.content[0].text).items[0].title, "Synthetic only");
-  assert.equal(f.calls.filter(x => x.path.endsWith("/_discovery/operations")).length, 2);
+  const projections=f.calls.filter(x => x.path.endsWith("/_discovery/operations"));
+  assert.equal(projections.length, 2);
+  assert.equal(new URL(projections[0].url).search,"");
+  assert.equal(new URL(projections[1].url).search,"?modelKey=task&operation=query");
 });
 
 test("modern headers/body mismatch, unsupported revision and legacy-only methods fail closed", async () => {
@@ -606,6 +612,26 @@ test("tools/list projects 20 authorized Models in one Core batch request, not 20
   ]);
 });
 
+test("known tool resolves one current semantic target, including older Core compatibility",async()=>{
+  for(const ignoreCatalogFilter of [false,true]){
+    const f=connectedFixture({modelCount:20,ignoreCatalogFilter});
+    const response=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+      name:"lifespace.query.task_07",arguments:{spaceId:"spc_synthetic"},
+    }}),f.env);
+    assert.equal(response.status,200);
+    assert.equal(JSON.parse((await response.json()).result.content[0].text).items[0].title,"Synthetic only");
+    const calls=f.calls.filter(x=>x.service==="CORE");
+    assert.equal(calls.length,2);
+    assert.equal(new URL(calls[0].url).search,"?modelKey=task_07&operation=query");
+    assert.match(calls[1].path,/_operations\/op_0*39\/invoke$/u);
+    const unknown=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+      name:"lifespace.query.secret",arguments:{spaceId:"spc_synthetic"},
+    }}),f.env);
+    assert.equal((await unknown.json()).error.code,-32602);
+    assert.equal(f.calls.filter(x=>x.path.endsWith("/invoke")).length,1);
+  }
+});
+
 test("MCP model Resources are dynamic Core-authorized semantic descriptors", async () => {
   for(const modern of [false,true]){
     const f=connectedFixture({modelCount:2});
@@ -636,6 +662,8 @@ test("MCP model Resources are dynamic Core-authorized semantic descriptors", asy
     if(modern)assert.deepEqual([data.ttlMs,data.cacheScope],[0,"private"]);
     assert.equal(f.calls.some(x=>x.service==="CORE"
       &&x.path==="/api/v1/spaces/spc_synthetic/_discovery/models/task_00"),true);
+    assert.equal(f.calls.some(x=>x.service==="CORE"&&x.path.endsWith("/_discovery/operations")
+      &&new URL(x.url).search==="?modelKey=task_00"),true);
     assert.ok(!JSON.stringify(data).includes(TOKEN));
   }
 });
@@ -971,6 +999,9 @@ test("third-party OAuth may request LifeSpace Account URL, status and explicit r
   assert.deepEqual(JSON.parse((await action.json()).result.content[0].text),
     {id:"rec_synthetic",version:2,status:"completed"});
   assert.ok(f.calls.some(x=>x.service==="CORE"&&x.path.endsWith("/records/rec_synthetic/actions/complete")));
+  // Only tools/list needs discovery; Delegation operations independently
+  // resolve exact current Core authority without the direct Agent catalog.
+  assert.equal(f.calls.filter(x=>x.path.endsWith("/_discovery/operations")).length,1);
 });
 
 test("third-party Account-approved Person supports Kernel routes but never inherits Native record ids or authority", async()=>{
