@@ -308,7 +308,7 @@ test("host-origin mismatch, CORS origin, query/path confusion and wrong transpor
 });
 
 
-function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", introspectionOverrides = {}, modelDetailStatus = 200, ignoreCatalogFilter = false } = {}) {
+function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", introspectionOverrides = {}, modelDetailStatus = 200, ignoreCatalogFilter = false, legacyIdentity = false, combinedContextOverrides = {}, combinedStatus = null } = {}) {
   const calls = [];
   let tokenActive = true;
   let currentApprovalStatus=approvalStatus;
@@ -384,13 +384,22 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
         scope: oauthScopes, allow_user_authorization: mayDelegate } : { active: false });
       if (path === "/oauth/execution-tokens") {
         assert.equal(init.headers["x-lifespace-resource-secret"], SECRET);
-        assert.deepEqual(JSON.parse(init.body), { token: TOKEN, resource: RESOURCE, ...((JSON.parse(init.body)).delegationId ? {delegationId:"dlg_synthetic"} : {}) });
-        return Response.json({ data: {
-          tokenType: "Bearer", accessToken: signToken,
-          scope: mutations ? oauthScopes : "resources:read", expiresIn: 60,
-          applicationId: invalidExchange ? "app_other" : active.application_id,
-          agentId: active.agent_id, spaceId: active.space_id,
-        } });
+        const input=JSON.parse(init.body);
+        assert.deepEqual(input,{token:TOKEN,resource:RESOURCE,...(input.delegationId?{delegationId:"dlg_synthetic"}:{}),
+          ...(input.includeContext?{includeContext:true}:{})});
+        if(input.includeContext&&legacyIdentity)return Response.json({error:"invalid_request"},{status:400});
+        if(!tokenActive)return Response.json({error:"invalid_token"},{status:401});
+        if(input.includeContext&&combinedStatus)return Response.json({error:combinedStatus.error},{status:combinedStatus.status});
+        const scope=input.includeContext||mutations?oauthScopes:"resources:read";
+        if(input.includeContext&&!oauthScopes.split(" ").includes("resources:read"))
+          return Response.json({error:"insufficient_scope"},{status:403});
+        const context={...active,...introspectionOverrides,scope,allow_user_authorization:mayDelegate,...combinedContextOverrides};
+        return Response.json({data:{
+          tokenType:"Bearer",accessToken:signToken,scope,expiresIn:60,
+          applicationId:invalidExchange?"app_other":active.application_id,
+          agentId:active.agent_id,spaceId:active.space_id,allowUserAuthorization:mayDelegate,
+          ...(input.includeContext?{context}:{}),
+        }});
       }
       throw new Error("Unexpected Identity endpoint " + path);
     } },
@@ -593,7 +602,6 @@ test("OAuth Agent Direct tools/list uses only Identity-minted Core JWT and scope
   assert.equal(data.result.tools[0].name, "lifespace.query.task");
   assert.deepEqual(data.result.tools[0].inputSchema.properties.spaceId.enum, ["spc_synthetic"]);
   assert.deepEqual(f.calls.map(x => x.service + " " + x.path), [
-    "IDENTITY /oauth/introspect",
     "IDENTITY /oauth/execution-tokens",
     "CORE /api/v1/spaces/spc_synthetic/_discovery/operations",
   ]);
@@ -747,7 +755,7 @@ test("revoking an OAuth Authorization invalidates cached MCP tool calls without 
     assert.ok(!JSON.stringify(await response.json()).includes(TOKEN));
   }
   assert.deepEqual(f.calls.slice(before).map(call => call.path), [
-    "/oauth/introspect", "/oauth/introspect", "/oauth/introspect",
+    "/oauth/execution-tokens", "/oauth/execution-tokens", "/oauth/execution-tokens",
   ]);
   assert.equal(f.calls.filter(call => call.path.endsWith("/records/query")).length, 0);
 });
@@ -1255,4 +1263,53 @@ test("Production and Staging advertise potentially upgradable writes but never g
     const r = await handleIdentityOAuthMcp(rpc("tools/call", { params: { name: "lifespace.create.task", arguments: { spaceId: "spc_synthetic", data: { name: "Synthetic only" } } } }), f.env);
     assert.equal((await r.json()).result.content[0].text, code);
   }
+});
+
+test("combined current Identity context uses one private exchange; legacy rejection alone falls back",async()=>{
+  for(const legacyIdentity of [false,true]){
+    const f=connectedFixture({legacyIdentity});
+    const result=await handleIdentityOAuthMcp(rpc("tools/list"),f.env);
+    assert.equal(result.status,200);
+    const paths=f.calls.filter(x=>x.service==="IDENTITY").map(x=>x.path);
+    assert.deepEqual(paths,legacyIdentity
+      ?["/oauth/execution-tokens","/oauth/introspect","/oauth/execution-tokens"]
+      :["/oauth/execution-tokens"]);
+    assert.equal(JSON.parse(f.calls[0].init.body).includeContext,true);
+    assert.ok(!JSON.stringify(await result.json()).includes(TOKEN));
+  }
+});
+test("combined denial or inconsistent context never falls back or reaches Core",async()=>{
+  for(const [options,status] of [
+    [{combinedStatus:{status:401,error:"invalid_token"}},401],
+    [{combinedStatus:{status:401,error:"invalid_client"}},503],
+    [{combinedStatus:{status:403,error:"insufficient_scope"}},403],
+    [{combinedStatus:{status:503,error:"temporarily_unavailable"}},503],
+    [{combinedContextOverrides:{resource:"https://other.example.com/mcp"}},503],
+    [{combinedContextOverrides:{allow_user_authorization:true}},503],
+    [{combinedContextOverrides:{scope:"resources:read resources:write"}},503],
+    [{invalidExchange:true},503],
+  ]){
+    const f=connectedFixture(options);
+    const response=await handleIdentityOAuthMcp(rpc("tools/list"),f.env);
+    assert.equal(response.status,status);
+    assert.deepEqual(f.calls.map(x=>x.path),["/oauth/execution-tokens"]);
+  }
+});
+
+test("malformed or oversized protocol envelope retains authentication precedence",async()=>{
+  const f=connectedFixture();
+  f.revokeOAuth();
+  const req=new Request(RESOURCE,{method:"POST",headers:{
+    authorization:"Bearer "+TOKEN,"content-type":"application/json",
+    accept:"application/json, text/event-stream",
+  },body:"{"});
+  assert.equal((await handleIdentityOAuthMcp(req,f.env)).status,401);
+  assert.deepEqual(f.calls.map(x=>x.path),["/oauth/introspect"]);
+  const valid=connectedFixture();
+  const oversized=new Request(RESOURCE,{method:"POST",headers:{
+    authorization:"Bearer "+TOKEN,"content-type":"application/json",
+    accept:"application/json, text/event-stream",
+  },body:"x".repeat(2*1024*1024)});
+  assert.equal((await handleIdentityOAuthMcp(oversized,valid.env)).status,413);
+  assert.deepEqual(valid.calls.map(x=>x.path),["/oauth/introspect"]);
 });

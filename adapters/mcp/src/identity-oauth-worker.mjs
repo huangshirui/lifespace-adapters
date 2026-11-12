@@ -169,6 +169,53 @@ async function verifyOAuthToken(request, config, env) {
   return validateIntrospection(payload, config);
 }
 
+function validateExecutionData(data, authorized) {
+  if (data?.tokenType !== "Bearer"
+    || typeof data.accessToken !== "string"
+    || data.accessToken.length > 5000
+    || !/^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(data.accessToken)
+    || !["resources:read", "resources:read resources:write"].includes(data.scope)
+    || data.scope.split(" ").some(scope => !authorized.context.scopes.includes(scope))
+    || !Number.isSafeInteger(data.expiresIn) || data.expiresIn < 1 || data.expiresIn > 60
+    || data.applicationId !== authorized.context.applicationId
+    || data.agentId !== authorized.context.agentId
+    || data.spaceId !== authorized.context.spaceId) {
+    return { error: "IDENTITY_EXECUTION_INVALID_RESPONSE" };
+  }
+  return { token: data.accessToken };
+}
+
+// Private Identity 0.19.0 opt-in. No credential or permission is cached,
+// and Core still verifies the execution JWT and all live authority.
+async function combinedExecution(request, config, env) {
+  const secret = env?.OAUTH_RESOURCE_SERVER_SECRET;
+  if (typeof secret !== "string" || secret.length < 32
+    || typeof env?.IDENTITY?.fetch !== "function") return { error: "resource_unavailable" };
+  let response;
+  try {
+    response = await env.IDENTITY.fetch("https://identity.internal/oauth/execution-tokens", {
+      method:"POST",headers:{"content-type":"application/json","x-lifespace-resource-secret":secret},
+      body:JSON.stringify({token:request.headers.get("authorization").slice(7),
+        resource:config.resource,includeContext:true}),
+    });
+  } catch {return {error:"resource_unavailable"};}
+  const result=await response.json().catch(()=>null);
+  // Exact old-contract response for the unsupported opt-in only. Never
+  // retry a revoked token, scope denial, malformed success or outage.
+  if(response.status===400&&result?.error==="invalid_request")return {legacy:true};
+  if(response.status===401&&result?.error==="invalid_token")return {error:"invalid_token"};
+  if(response.status===403&&result?.error==="insufficient_scope")return {error:"insufficient_scope"};
+  if(response.status!==200)return {error:"resource_unavailable"};
+  const data=result?.data;
+  const authorized=validateIntrospection(data?.context,config);
+  if(authorized.error)return {error:"resource_unavailable"};
+  const execution=validateExecutionData(data,authorized);
+  if(execution.error||data.scope!==data.context.scope
+    ||data.allowUserAuthorization!==authorized.context.mayRequestDelegation)
+    return {error:"resource_unavailable"};
+  return {authorized,execution};
+}
+
 async function coreExecution(authorized, request, config, env, delegationId = null) {
   if (!env?.CORE || typeof env.CORE.fetch !== "function"
     || !env?.IDENTITY || typeof env.IDENTITY.fetch !== "function") {
@@ -192,20 +239,7 @@ async function coreExecution(authorized, request, config, env, delegationId = nu
   } catch { return { error: "IDENTITY_EXECUTION_UNAVAILABLE" }; }
   if (response.status !== 200) return { error: "IDENTITY_EXECUTION_DENIED" };
   const result = await response.json().catch(() => null);
-  const data = result?.data;
-  if (data?.tokenType !== "Bearer"
-    || typeof data.accessToken !== "string"
-    || data.accessToken.length > 5000
-    || !/^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(data.accessToken)
-    || !["resources:read", "resources:read resources:write"].includes(data.scope)
-    || data.scope.split(" ").some(scope => !authorized.context.scopes.includes(scope))
-    || !Number.isSafeInteger(data.expiresIn) || data.expiresIn < 1 || data.expiresIn > 60
-    || data.applicationId !== authorized.context.applicationId
-    || data.agentId !== authorized.context.agentId
-    || data.spaceId !== authorized.context.spaceId) {
-    return { error: "IDENTITY_EXECUTION_INVALID_RESPONSE" };
-  }
-  return { token: data.accessToken };
+  return validateExecutionData(result?.data, authorized);
 }
 
 async function coreJson(env, coreToken, path, method = "GET", body, delegationId = null) {
@@ -636,6 +670,51 @@ function modernRequestError(request, message) {
   return { modern: true };
 }
 
+async function parseMcpEnvelope(request) {
+  if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
+    return {error:json({ error: "Expected application/json" }, 415)};
+  }
+  const accept = request.headers.get("accept") || "";
+  if (!accept.includes("application/json") || !accept.includes("text/event-stream")) {
+    return {error:json({ error: "MCP Accept header is required" }, 406)};
+  }
+  const declared = Number(request.headers.get("content-length") || 0);
+  if (!Number.isFinite(declared) || declared > MAX_BODY_BYTES) return {error:json({ error: "Request too large" }, 413)};
+  // Bounded pre-auth transport parsing: only the method selects the Identity
+  // operation. Never resolve any caller-supplied identity or authority here.
+  let body="";
+  const reader=request.body?.getReader();
+  if(reader){
+    const decoder=new TextDecoder();
+    let bytes=0;
+    try{
+      while(true){
+        const next=await reader.read();
+        if(next.done)break;
+        bytes+=next.value.byteLength;
+        if(bytes>MAX_BODY_BYTES){
+          await reader.cancel().catch(()=>undefined);
+          return {error:json({error:"Request too large"},413)};
+        }
+        body+=decoder.decode(next.value,{stream:true});
+      }
+      body+=decoder.decode();
+    }catch{return {error:rpcError(null,-32700,"Parse error",400)};}
+    finally{reader.releaseLock();}
+  }
+  let message;
+  try { message = JSON.parse(body); } catch { return {error:rpcError(null, -32700, "Parse error", 400)}; }
+  if (!message || typeof message !== "object" || Array.isArray(message)
+    || message.jsonrpc !== "2.0" || typeof message.method !== "string"
+    || (message.id !== undefined && !(
+      (typeof message.id === "string" && message.id.length <= 128)
+      || (typeof message.id === "number" && Number.isFinite(message.id))
+    ))) return {error:rpcError(null, -32600, "Invalid request", 400)};
+
+  const checked=modernRequestError(request,message);
+  return checked.error?{error:checked.error}:{message,modern:checked.modern};
+}
+
 export async function handleIdentityOAuthMcp(request, env) {
   const url = new URL(request.url);
   if (env?.MCP_RESOURCE_ORIGIN !== undefined) {
@@ -660,34 +739,27 @@ export async function handleIdentityOAuthMcp(request, env) {
   if (!validOrigin(request, config)) return json({ error: "Invalid origin" }, 403);
   if (request.method !== "POST") return json({ error: "MCP requires POST" }, 405, { allow: "POST" });
 
-  const authorized = await verifyOAuthToken(request, config, env);
+  // Reject missing/malformed bearer before reading any body. For all other
+  // requests the bounded envelope only chooses an authentication path;
+  // protocol errors are returned only after authentication.
+  const bearer=request.headers.get("authorization")||"";
+  if(!/^Bearer lsp_oat_[A-Za-z0-9_-]+$/u.test(bearer)||bearer.length>MAX_TOKEN_LENGTH+7)
+    return authFailure(config,request);
+  if(typeof env?.OAUTH_RESOURCE_SERVER_SECRET!=="string"||env.OAUTH_RESOURCE_SERVER_SECRET.length<32
+    ||typeof env?.IDENTITY?.fetch!=="function")return json({error:"Resource authentication unavailable"},503);
+  const envelope=await parseMcpEnvelope(request);
+  const dataMethod=!envelope.error&&envelope.message.id!==undefined
+    &&["tools/list","tools/call","resources/list","resources/read"].includes(envelope.message.method);
+  const combined=dataMethod&&typeof env?.CORE?.fetch==="function"
+    ?await combinedExecution(request,config,env):{legacy:true};
+  const authorized=combined.legacy?await verifyOAuthToken(request,config,env)
+    :combined.error?{error:combined.error}:combined.authorized;
   if (authorized.error === "resource_unavailable") return json({ error: "Resource authentication unavailable" }, 503);
   if (authorized.error === "insufficient_scope") return insufficientScope(config, request);
   if (authorized.error) return authFailure(config, request);
+  if(envelope.error)return envelope.error;
+  const {message,modern}=envelope;
 
-  if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
-    return json({ error: "Expected application/json" }, 415);
-  }
-  const accept = request.headers.get("accept") || "";
-  if (!accept.includes("application/json") || !accept.includes("text/event-stream")) {
-    return json({ error: "MCP Accept header is required" }, 406);
-  }
-  const declared = Number(request.headers.get("content-length") || 0);
-  if (!Number.isFinite(declared) || declared > MAX_BODY_BYTES) return json({ error: "Request too large" }, 413);
-  const body = await request.text();
-  if (new TextEncoder().encode(body).length > MAX_BODY_BYTES) return json({ error: "Request too large" }, 413);
-  let message;
-  try { message = JSON.parse(body); } catch { return rpcError(null, -32700, "Parse error", 400); }
-  if (!message || typeof message !== "object" || Array.isArray(message)
-    || message.jsonrpc !== "2.0" || typeof message.method !== "string"
-    || (message.id !== undefined && !(
-      (typeof message.id === "string" && message.id.length <= 128)
-      || (typeof message.id === "number" && Number.isFinite(message.id))
-    ))) return rpcError(null, -32600, "Invalid request", 400);
-
-  const checked = modernRequestError(request, message);
-  if (checked.error) return checked.error;
-  const modern = checked.modern;
   if (modern && message.id !== undefined && message.method === "server/discover") {
     return rpcResult(message.id, {
       supportedVersions: SUPPORTED_VERSIONS,
@@ -713,7 +785,7 @@ export async function handleIdentityOAuthMcp(request, env) {
   if (!["tools/list","tools/call","resources/list","resources/read"].includes(message.method)) {
     return rpcError(message.id, -32601, "Method not found", modern ? 404 : 200);
   }
-  const execution = await coreExecution(authorized, request, config, env);
+  const execution = combined.execution ?? await coreExecution(authorized, request, config, env);
   if (execution.error) return json({ error: execution.error }, 503);
 
   if (message.method === "tools/list") {
