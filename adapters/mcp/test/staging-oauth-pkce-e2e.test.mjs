@@ -12,7 +12,7 @@ const refreshToken = "lsp_ort_" + "B".repeat(43);
 const code = "lsp_oac_" + "C".repeat(43);
 const config = { resource, issuer, confirmation: "REVOKE_DEDICATED_STAGING_OAUTH" };
 
-function fakeIssuer({ dcr = true } = {}) {
+function fakeIssuer({ dcr = true, benchmark = false, queryFails = false } = {}) {
   let active = true;
   const calls = [];
   let redirect = "";
@@ -71,11 +71,20 @@ function fakeIssuer({ dcr = true } = {}) {
       }
       if (path.startsWith("/mcp/mcp_")) {
         assert.equal(init.headers.authorization, "Bearer " + accessToken);
-        assert.equal(JSON.parse(init.body).method, "tools/list");
-        return active ? Response.json({
-          jsonrpc: "2.0", id: 1,
-          result: { tools: [{ name: "lifespace.query.task" }] },
-        }) : Response.json({ error: "synthetic invalid token" }, { status: 401 });
+        const body=JSON.parse(init.body);
+        if(!active)return Response.json({error:"synthetic invalid token"},{status:401});
+        if(body.method==="tools/call"){
+          assert.ok(benchmark);
+          assert.equal(body.params.name,"lifespace.query.task");
+          assert.deepEqual(body.params.arguments.data,{page:{limit:1}});
+          const allowed=body.params.arguments.spaceId==="spc_synthetic";
+          return Response.json({jsonrpc:"2.0",id:1,result:allowed&&!queryFails
+            ?{content:[{type:"text",text:"Synthetic private fixture result"}],structuredContent:{items:[]}}
+            :{isError:true,content:[{type:"text",text:"Denied"}]}});
+        }
+        assert.equal(body.method,"tools/list");
+        return Response.json({jsonrpc:"2.0",id:1,result:{tools:[{name:"lifespace.query.task",
+          ...(benchmark?{inputSchema:{properties:{spaceId:{enum:["spc_synthetic"]}}}}:{})}]}});
       }
       throw new Error("Unexpected synthetic request");
     },
@@ -147,4 +156,41 @@ test("never registers a client when the Staging issuer does not advertise DCR", 
     onAuthorizeUrl: () => { throw new Error("Should never open browser"); },
   }), /Staging PKCE E2E/u);
   assert.equal(server.calls.some(call => call.path === "/oauth/register"), false);
+});
+
+async function approveSynthetic(authorize) {
+  const auth=new URL(authorize),callback=new URL(auth.searchParams.get("redirect_uri"));
+  callback.searchParams.set("code",code);
+  callback.searchParams.set("state",auth.searchParams.get("state"));
+  callback.searchParams.set("iss",issuer);
+  assert.equal((await fetch(callback)).status,200);
+}
+test("measures real protocol requests with bounded read-only benchmark, cross-Space denial and revoked cached call",async()=>{
+  const server=fakeIssuer({benchmark:true});
+  const result=await runStagingPkceRevocation({...config,benchmarkSamples:3},{
+    fetchImpl:server.fetch,timeoutMs:3000,onAuthorizeUrl:approveSynthetic,
+  });
+  assert.equal(result.benchmark.measurement,"client-end-to-end");
+  assert.equal(result.benchmark.toolCount,1);
+  for(const item of [result.benchmark.list,result.benchmark.call]){
+    assert.equal(item.samples,3);
+    assert.ok(item.p50Ms<=item.p90Ms&&item.p90Ms<=item.maxMs);
+  }
+  assert.equal(result.benchmark.crossSpaceDenied,true);
+  assert.equal(result.benchmark.revokedCallHttp,401);
+  assert.doesNotMatch(JSON.stringify(result),/spc_synthetic|Synthetic private fixture result|lsp_oat_|lsp_ort_/u);
+});
+test("benchmark failure revokes the disposable Authorization",async()=>{
+  const server=fakeIssuer({benchmark:true,queryFails:true});
+  await assert.rejects(runStagingPkceRevocation({...config,benchmarkSamples:3},{
+    fetchImpl:server.fetch,timeoutMs:3000,onAuthorizeUrl:approveSynthetic,
+  }),/benchmark Task query failed/u);
+  assert.equal(server.calls.filter(call=>call.path==="/oauth/revoke").length,1);
+});
+test("invalid benchmark count fails before registration",async()=>{
+  const server=fakeIssuer();
+  await assert.rejects(runStagingPkceRevocation({...config,benchmarkSamples:46},{
+    fetchImpl:server.fetch,timeoutMs:3000,onAuthorizeUrl:approveSynthetic,
+  }),/benchmark sample count/u);
+  assert.equal(server.calls.length,0);
 });

@@ -109,3 +109,7 @@ Development-only Agent Direct CRUD is gated by Staging + explicit read/write
 OAuth consent + Core's exact current model contract and authority preview.
 Production remains read-only; User Delegation is not implicitly enabled.
 Contract, argument and deployment details: [MCP adapter](../../docs/mcp-adapter.md).
+
+### Optional live read-only MCP timing / 真实 MCP 只读性能诊断
+
+Use the existing browser PKCE test with `MCP_STAGING_BENCHMARK_SAMPLES=15` (1–45; omitted or 0 keeps the original flow). In Account Consent select a disposable Staging Agent/Space with the current `lifespace.query.task` tool. The benchmark obtains the Space only from that live tool's schema; it executes Task Query with page limit 1, measures the complete client HTTP/JSON time of tools/list and tools/call, verifies a synthetic wrong-Space denial and then revokes the dedicated Authorization, verifying cached list/call and refresh rejection. It never prints records, Space IDs, tokens, schemas or raw responses, and the existing finally block attempts revocation on partial failure. The temporary DCR client still requires normal Console governance. This diagnostic does not change APAC release thresholds or establish APAC placement: the measurement includes the local client network. Compare only equivalent networks, tool counts and fixtures; do not infer internal Core latency from this metric alone.
