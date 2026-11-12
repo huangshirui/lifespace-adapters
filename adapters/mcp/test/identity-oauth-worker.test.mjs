@@ -390,7 +390,7 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
         if(input.includeContext&&legacyIdentity)return Response.json({error:"invalid_request"},{status:400});
         if(!tokenActive)return Response.json({error:"invalid_token"},{status:401});
         if(input.includeContext&&combinedStatus)return Response.json({error:combinedStatus.error},{status:combinedStatus.status});
-        const scope=mutations?oauthScopes:"resources:read";
+        const scope=input.includeContext||mutations?oauthScopes:"resources:read";
         if(input.includeContext&&!oauthScopes.split(" ").includes("resources:read"))
           return Response.json({error:"insufficient_scope"},{status:403});
         const context={...active,...introspectionOverrides,scope,allow_user_authorization:mayDelegate,...combinedContextOverrides};
@@ -1294,4 +1294,22 @@ test("combined denial or inconsistent context never falls back or reaches Core",
     assert.equal(response.status,status);
     assert.deepEqual(f.calls.map(x=>x.path),["/oauth/execution-tokens"]);
   }
+});
+
+test("malformed or oversized protocol envelope retains authentication precedence",async()=>{
+  const f=connectedFixture();
+  f.revokeOAuth();
+  const req=new Request(RESOURCE,{method:"POST",headers:{
+    authorization:"Bearer "+TOKEN,"content-type":"application/json",
+    accept:"application/json, text/event-stream",
+  },body:"{"});
+  assert.equal((await handleIdentityOAuthMcp(req,f.env)).status,401);
+  assert.deepEqual(f.calls.map(x=>x.path),["/oauth/introspect"]);
+  const valid=connectedFixture();
+  const oversized=new Request(RESOURCE,{method:"POST",headers:{
+    authorization:"Bearer "+TOKEN,"content-type":"application/json",
+    accept:"application/json, text/event-stream",
+  },body:"x".repeat(2*1024*1024)});
+  assert.equal((await handleIdentityOAuthMcp(oversized,valid.env)).status,413);
+  assert.deepEqual(valid.calls.map(x=>x.path),["/oauth/introspect"]);
 });
