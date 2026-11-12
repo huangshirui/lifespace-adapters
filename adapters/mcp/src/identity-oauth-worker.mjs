@@ -215,8 +215,16 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
   const oauthRequest = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/oauth-delegation-requests(?:\/arq_[a-f0-9]{32})?$/u.test(path)
     && (method === "POST" && path.endsWith("/oauth-delegation-requests")
       || method === "GET" && /\/arq_[a-f0-9]{32}$/u.test(path));
-  const genericCatalog = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_discovery\/operations$/u.test(path)
-    && method==="GET";
+  const catalogUrl=new URL("https://core.internal"+path);
+  const catalogParams=catalogUrl.searchParams;
+  const catalogModel=catalogParams.get("modelKey"),catalogOperation=catalogParams.get("operation");
+  const validCatalogFilter=!catalogUrl.search||(
+    [...catalogParams.keys()].every(k=>k==="modelKey"||k==="operation")
+    &&catalogParams.getAll("modelKey").length===1&&catalogParams.getAll("operation").length<=1
+    &&/^[a-z][a-z0-9_]{1,62}$/u.test(catalogModel||"")
+    &&(catalogOperation===null||/^(query|get|create|update|delete|action:[a-z][a-z0-9_-]{0,62})$/u.test(catalogOperation)));
+  const genericCatalog = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_discovery\/operations$/u.test(catalogUrl.pathname)
+    && method==="GET"&&validCatalogFilter&&!catalogUrl.hash;
   const genericCommand = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_operations\/op_[a-f0-9]{64}\/invoke$/u.test(path)
     && method==="POST";
   // Person routes are a documented Kernel transport exception. The Agent
@@ -277,8 +285,17 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
   return { payload };
 }
 
-async function currentToolProjection(env,coreToken,selectedSpace){
-  const path="/api/v1/spaces/"+encodeURIComponent(selectedSpace)+"/_discovery/operations";
+// These selectors are protocol name parsing, not a derivation of permissions
+// or Core's opaque reference. Core owns the current filtered descriptors.
+function toolSelector(name){
+  const simple=/^lifespace\.(query|get|create|update|delete)\.([a-z][a-z0-9_]{1,62})$/u.exec(name);
+  if(simple)return {modelKey:simple[2],operation:simple[1]};
+  const action=/^lifespace\.action\.([a-z][a-z0-9_]{1,62})\.([a-z][a-z0-9_-]{0,62})$/u.exec(name);
+  return action?{modelKey:action[1],operation:"action:"+action[2]}:null;
+}
+async function currentToolProjection(env,coreToken,selectedSpace,filter){
+  const path="/api/v1/spaces/"+encodeURIComponent(selectedSpace)+"/_discovery/operations"
+    +(filter?"?"+new URLSearchParams(filter).toString():"");
   const response=await coreJson(env,coreToken,path);
   if(response.error)return response;
   try{return {projected:projectCoreOperationCatalog(response.payload?.data,selectedSpace)};}
@@ -699,13 +716,13 @@ export async function handleIdentityOAuthMcp(request, env) {
   const execution = await coreExecution(authorized, request, config, env);
   if (execution.error) return json({ error: execution.error }, 503);
 
-  const current = await currentToolProjection(env, execution.token, authorized.context.spaceId);
-  if (current.error) return json({ error: current.error }, 503);
   if (message.method === "tools/list") {
     if (message.params && (typeof message.params !== "object" || Array.isArray(message.params)
       || Object.keys(message.params).some(key => key !== "cursor" && !(modern && key === "_meta")) || message.params.cursor)) {
       return rpcError(message.id, -32602, "Unsupported pagination parameters");
     }
+    const current=await currentToolProjection(env,execution.token,authorized.context.spaceId);
+    if(current.error)return json({error:current.error},503);
     return rpcResult(message.id, { tools: [...current.projected.tools,
       ...(authorized.context.mayRequestDelegation ? userDelegationTools() : [])],
       ...(modern ? { ttlMs: 0, cacheScope: "private" } : {}) }, modern);
@@ -716,6 +733,8 @@ export async function handleIdentityOAuthMcp(request, env) {
       || Object.keys(message.params).some(k=>k!=="cursor" && !(modern && k==="_meta"))
       || message.params.cursor))
       return rpcError(message.id,-32602,"Unsupported resource pagination parameters");
+    const current=await currentToolProjection(env,execution.token,authorized.context.spaceId);
+    if(current.error)return json({error:current.error},503);
     return rpcResult(message.id,{
       resources:authorizedModelResources(current.projected,authorized.context.spaceId),
       ...(modern?{ttlMs:0,cacheScope:"private"}:{}),
@@ -726,6 +745,10 @@ export async function handleIdentityOAuthMcp(request, env) {
       || Object.keys(message.params).some(k=>k!=="uri" && !(modern && k==="_meta"))
       || typeof message.params.uri!=="string")
       return rpcError(message.id,-32602,"Invalid Resource URI");
+    const match=/^lifespace:\/\/spaces\/(spc_[A-Za-z0-9_-]+)\/models\/([a-z][a-z0-9_]{1,62})$/u.exec(message.params.uri);
+    if(!match||match[1]!==authorized.context.spaceId)return rpcError(message.id,-32602,"Resource unavailable");
+    const current=await currentToolProjection(env,execution.token,authorized.context.spaceId,{modelKey:match[2]});
+    if(current.error)return json({error:current.error},503);
     const resource=authorizedModelResources(current.projected,authorized.context.spaceId)
       .find(x=>x.uri===message.params.uri);
     if(!resource)return rpcError(message.id,-32602,"Resource unavailable");
@@ -843,7 +866,14 @@ export async function handleIdentityOAuthMcp(request, env) {
     }
     return rpcResult(message.id,coreToolResult(outcome),modern);
   }
-  const binding = current.projected.bindings[message.params.name];
+  const filter=toolSelector(message.params.name);
+  if(!filter)return rpcError(message.id,-32602,"Tool is not in the currently authorized projection");
+  const current=await currentToolProjection(env,execution.token,authorized.context.spaceId,filter);
+  if(current.error)return json({error:current.error},503);
+  // A previous compatible Core may ignore query filters. Always select the
+  // exact binding, never trust a returned operation solely by position.
+  const binding = Object.hasOwn(current.projected.bindings,message.params.name)
+    ?current.projected.bindings[message.params.name]:undefined;
   if (!binding) return rpcError(message.id, -32602, "Tool is not in the currently authorized projection");
   // Tool discovery can show an Agent operation requiring explicit additional
   // OAuth Scope, but the current token never gains it by being listed.

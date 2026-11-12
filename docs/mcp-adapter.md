@@ -262,3 +262,8 @@ No External write, batch mutation, Action, admin surface or implicit User Delega
 is added. `allow_user_authorization` is eligibility, **not** delegated authority.
 Real Staging CRUD/rollback/revocation acceptance must follow deployment; local tests
 alone do not establish that the live write chain is available.
+
+
+## Targeted operation discovery (candidate)
+
+Core Generic Operation Projection 0.3.0 adds optional exact modelKey and operation filters to the existing current-authority catalog. The Adapter parses its own deterministic MCP tool names into these transport selectors, never derives opaque Core operationRef values or decides authority. tools/list and resources/list retain complete live discovery; tools/call requests only the exact operation and resources/read only the named model, then the existing canonical operation/semantic endpoint. Delegation status/request/execution uses its existing independently checked Core routes without an unrelated direct-Agent catalog. No cross-request authority or tool cache. A previous Core that ignores filters may return the complete catalog; the Adapter still selects the exact requested binding. Deploy compatible Core first to realize the performance improvement. This is protocol transport optimization, not a new LifeSpace business capability; Core's same generic read contract is sufficient with compatible filtering. Tests use synthetic data only; deployed latency remains unverified.
