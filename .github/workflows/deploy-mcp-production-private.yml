@@ -103,6 +103,9 @@ jobs:
           node --check adapters/mcp/src/identity-oauth-worker.mjs
           node --test adapters/mcp/test/*.test.mjs
 
+      - name: Verify existing private Adapter credential matches live Identity before mutation
+        run: node adapters/mcp/scripts/verify-production-resource-credential.mjs
+
       - name: Generate private Production config from protected environment variables
         shell: bash
         run: |
