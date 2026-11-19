@@ -251,12 +251,15 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
       || method === "GET" && /\/arq_[a-f0-9]{32}$/u.test(path));
   const catalogUrl=new URL("https://core.internal"+path);
   const catalogParams=catalogUrl.searchParams;
-  const catalogModel=catalogParams.get("modelKey"),catalogOperation=catalogParams.get("operation");
+  const catalogModel=catalogParams.get("modelKey"),catalogOperation=catalogParams.get("operation"),catalogMode=catalogParams.get("mode");
   const validCatalogFilter=!catalogUrl.search||(
-    [...catalogParams.keys()].every(k=>k==="modelKey"||k==="operation")
-    &&catalogParams.getAll("modelKey").length===1&&catalogParams.getAll("operation").length<=1
-    &&/^[a-z][a-z0-9_]{1,62}$/u.test(catalogModel||"")
-    &&(catalogOperation===null||/^(query|get|create|update|delete|file_read|file_upload|action:[a-z][a-z0-9_-]{0,62})$/u.test(catalogOperation)));
+    [...catalogParams.keys()].every(k=>k==="modelKey"||k==="operation"||k==="mode")
+    &&catalogParams.getAll("modelKey").length<=1&&catalogParams.getAll("operation").length<=1
+    &&catalogParams.getAll("mode").length<=1
+    &&(catalogMode===null||catalogMode==="delegation_request")
+    &&(catalogMode==="delegation_request"||catalogModel!==null)
+    &&(catalogModel===null||/^[a-z][a-z0-9_]{1,62}$/u.test(catalogModel))
+    &&(catalogOperation===null||(catalogModel!==null&&/^(query|get|create|update|delete|file_read|file_upload|action:[a-z][a-z0-9_-]{0,62})$/u.test(catalogOperation))));
   const genericCatalog = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_discovery\/operations$/u.test(catalogUrl.pathname)
     && method==="GET"&&validCatalogFilter&&!catalogUrl.hash;
   const genericCommand = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_operations\/op_[a-f0-9]{64}\/invoke$/u.test(path)
@@ -460,6 +463,15 @@ function oauthToolSecurity() {
 }
 function userDelegationTools() {
   return [
+    { name:"lifespace.discover_user_delegation",
+      ...oauthToolSecurity(),
+      title:"Discover LifeSpace User Delegation Eligibility",
+      description:"List current Model operations eligible to request independent User approval, even without direct Agent Data Grant. This is non-authorizing metadata only, not executable tools, input schemas, or record data. Use request_user_delegation and execute_user_delegation separately.",
+      annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+      inputSchema:{type:"object",additionalProperties:false,properties:{
+        modelKey:{type:"string",pattern:"^[a-z][a-z0-9_]{1,62}$"},operation:delegatedOpSchema,
+      },dependentRequired:{operation:["modelKey"]}},
+    },
     { name: "lifespace.request_user_delegation",
       ...oauthToolSecurity(),
       title: "Request LifeSpace User Delegation",
@@ -872,6 +884,41 @@ export async function handleIdentityOAuthMcp(request, env) {
     || !message.params.arguments || typeof message.params.arguments !== "object"
     || Array.isArray(message.params.arguments)) {
     return rpcError(message.id, -32602, "Invalid tool invocation");
+  }
+  if(message.params.name==="lifespace.discover_user_delegation"){
+    if(!authorized.context.mayRequestDelegation)
+      return rpcError(message.id,-32602,"User Delegation is disabled for this OAuth grant");
+    const args=message.params.arguments;
+    if(message.params.requestState!==undefined||message.params.inputResponses!==undefined
+      ||Object.keys(args).some(k=>!["modelKey","operation"].includes(k))
+      ||(args.modelKey!==undefined&&(typeof args.modelKey!=="string"||!DELEGATION_MODEL.test(args.modelKey)))
+      ||(args.operation!==undefined&&(!args.modelKey||!delegatedOp(args.operation))))
+      return rpcError(message.id,-32602,"Invalid Delegation discovery filter");
+    const query=new URLSearchParams({mode:"delegation_request"});
+    if(args.modelKey!==undefined)query.set("modelKey",args.modelKey);
+    if(args.operation!==undefined)query.set("operation",args.operation);
+    const path="/api/v1/spaces/"+encodeURIComponent(authorized.context.spaceId)+"/_discovery/operations?"+query.toString();
+    const result=await coreJson(env,execution.token,path);
+    if(result.error)return rpcResult(message.id,coreToolResult(result),modern);
+    const data=result.payload?.data,rows=data?.eligibleOperations,seen=new Set();
+    // A legacy Core might ignore mode and return direct tool schemas.
+    // Never reinterpret or forward those as delegation eligibility.
+    if(!data||Object.keys(data).length!==1||!Array.isArray(rows)||rows.length>128
+      ||rows.some(row=>{
+        if(!row||typeof row!=="object"||Array.isArray(row)
+          ||Object.keys(row).sort().join(",")!=="modelKey,operation,requiredScopes"
+          ||!DELEGATION_MODEL.test(row.modelKey||"")||!delegatedOp(row.operation)
+          ||(args.modelKey&&row.modelKey!==args.modelKey)||(args.operation&&row.operation!==args.operation)
+          ||!Array.isArray(row.requiredScopes)||row.requiredScopes.length<1||row.requiredScopes.length>2
+          ||row.requiredScopes[0]!=="resources:read"||new Set(row.requiredScopes).size!==row.requiredScopes.length
+          ||row.requiredScopes.some(scope=>!["resources:read","resources:write"].includes(scope)||!authorized.context.scopes.includes(scope))
+          ||(["query","get","file_read"].includes(row.operation)&&row.requiredScopes.length!==1)
+          ||(["create","update","delete","file_upload"].includes(row.operation)&&row.requiredScopes.length!==2))return true;
+        const key=row.modelKey+":"+row.operation;
+        if(seen.has(key))return true;
+        seen.add(key);return false;
+      }))return rpcResult(message.id,coreToolResult({error:"CORE_OPERATION_CATALOG_INVALID"}),modern);
+    return rpcResult(message.id,coreToolResult({payload:{data:{eligibleOperations:rows}}}),modern);
   }
   if (message.params.name.startsWith("lifespace.") && [
       "lifespace.request_user_delegation", "lifespace.user_delegation_status",
