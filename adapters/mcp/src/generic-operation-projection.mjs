@@ -4,7 +4,7 @@ const OP_REF=/^op_[a-f0-9]{64}$/u;
 const SPACE=/^spc_[A-Za-z0-9_-]+$/u;
 const MODEL=/^[a-z][a-z0-9_]{1,62}$/u;
 const ACTION=/^action:([a-z][a-z0-9_-]{0,62})$/u;
-const SIMPLE=new Set(["query","get","create","update","delete","file_read"]);
+const SIMPLE=new Set(["query","get","create","update","delete","file_read","file_upload"]);
 const TOOL=/^[A-Za-z0-9_.-]{1,128}$/u;
 const MAX=128;
 export function projectCoreOperationCatalog(payload,spaceId) {
@@ -30,7 +30,7 @@ export function projectCoreOperationCatalog(payload,spaceId) {
       ||row.requiredScopes[0]!=="resources:read"
       ||(row.requiredScopes.length===2&&row.requiredScopes[1]!=="resources:write")
       ||(["query","get","file_read"].includes(row.operation)&&row.requiredScopes.length!==1)
-      ||(["create","update","delete"].includes(row.operation)&&row.requiredScopes.length!==2)
+      ||(["create","update","delete","file_upload"].includes(row.operation)&&row.requiredScopes.length!==2)
       ||refs.has(row.operationRef))throw Error("Invalid or duplicate Core operation");
     refs.add(row.operationRef);
     const action=ACTION.exec(row.operation||"");

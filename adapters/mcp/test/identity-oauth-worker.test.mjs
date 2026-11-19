@@ -308,7 +308,7 @@ test("host-origin mismatch, CORS origin, query/path confusion and wrong transpor
 });
 
 
-function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", introspectionOverrides = {}, modelDetailStatus = 200, ignoreCatalogFilter = false, legacyIdentity = false, combinedContextOverrides = {}, combinedStatus = null, fileReadDescriptor = null } = {}) {
+function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", introspectionOverrides = {}, modelDetailStatus = 200, ignoreCatalogFilter = false, legacyIdentity = false, combinedContextOverrides = {}, combinedStatus = null, fileReadDescriptor = null, fileUploadDescriptor = null, fileUploadCompleted = null } = {}) {
   const calls = [];
   let tokenActive = true;
   let currentApprovalStatus=approvalStatus;
@@ -371,7 +371,7 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
           ...(op==="get"?{}:{data:op==="create"&&mutations
             ?{$ref:"#/$defs/Create"}:{type:"object"}})},
         required:["spaceId",...(op==="get"||op==="update"||op==="delete"||op==="file_read"?["recordId"]:[]),
-          ...(op==="create"||op==="update"||op==="delete"||op==="file_read"?["data"]:[])],
+          ...(op==="create"||op==="update"||op==="delete"||op==="file_read"||op==="file_upload"?["data"]:[])],
         ...(op==="create"&&mutations?{$defs:detail.data.mutations.$defs}:{})}};
   }));
   const operationByRef = new Map(syntheticCatalog.map(row => [row.operationRef,row.operation]));
@@ -390,7 +390,7 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
         if(input.includeContext&&legacyIdentity)return Response.json({error:"invalid_request"},{status:400});
         if(!tokenActive)return Response.json({error:"invalid_token"},{status:401});
         if(input.includeContext&&combinedStatus)return Response.json({error:combinedStatus.error},{status:combinedStatus.status});
-        const scope=input.includeContext||mutations?oauthScopes:"resources:read";
+        const scope=input.includeContext||mutations||mcpOperations?.includes("file_upload")?oauthScopes:"resources:read";
         if(input.includeContext&&!oauthScopes.split(" ").includes("resources:read"))
           return Response.json({error:"insufficient_scope"},{status:403});
         const context={...active,...introspectionOverrides,scope,allow_user_authorization:mayDelegate,...combinedContextOverrides};
@@ -415,10 +415,16 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
         assert.ok(v.modelKey==="person"
           ? ["query","get","create","update","delete"].includes(v.operation)
           : v.modelKey==="external_synthetic" ? v.operation==="update"
-          : ["create","action:complete","file_read"].includes(v.operation));
+          : ["create","action:complete","file_read","file_upload"].includes(v.operation));
         assert.equal(typeof v.reason,"string");
         lastApprovalReason=v.reason.trim();
         return Response.json({data:{id:"arq_"+ "f".repeat(32),status:"pending",approvalUrl:"https://account.example.test/delegation?request_id=arq_"+ "f".repeat(32)}});
+      }
+      if (mayDelegate && /^\/api\/v1\/spaces\/spc_synthetic\/models\/task\/file-uploads(?:\/upl_[a-f0-9]{32}\/complete)?$/u.test(path)) {
+        assert.equal(init.headers["x-lifespace-delegation-id"],"dlg_synthetic");
+        if(denied)return Response.json({error:"private denial"},{status:403});
+        if(path.endsWith("/complete"))return Response.json({data:fileUploadCompleted});
+        return Response.json({data:fileUploadDescriptor},{status:201});
       }
       if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/models/task/records/rec_synthetic/file-downloads") {
         assert.equal(init.headers["x-lifespace-delegation-id"],"dlg_synthetic");
@@ -456,6 +462,12 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
           if (queryStatus !== 200)
             return Response.json({error:{code:"SYNTHETIC_PRIVATE_ERROR",message:"Do not expose upstream details"}},{status:queryStatus});
           return Response.json({data:{items:[{title:"Synthetic only"}]}});
+        }
+        if (op === "file_upload") {
+          if(denied)return Response.json({error:"private denial"},{status:403});
+          return requested.arguments?.data?.phase==="begin"
+            ?Response.json({data:fileUploadDescriptor},{status:201})
+            :Response.json({data:fileUploadCompleted});
         }
         if (op === "file_read") return denied?Response.json({error:"private denial"},{status:403}):Response.json({data:fileReadDescriptor});
         if (op === "get") return Response.json({data:{id:"rec_synthetic",version:1}});
@@ -1351,5 +1363,59 @@ test("direct and represented file reads return the canonical descriptor without 
   const old=connectedFixture({mcpOperations:["get"],fileReadDescriptor});
   const stale=await handleIdentityOAuthMcp(rpc("tools/call",{params:direct}),old.env);
   assert.ok((await stale.json()).error);
+  assert.equal(transfers,0);
+});
+
+
+test("native file_upload projects signed PUT session and completion without transferring bytes",async(t)=>{
+  const uploadId="upl_"+"a".repeat(32);
+  const fileId="fil_"+"b".repeat(32);
+  const url="https://files.example.com/synthetic-upload?fixture=not-a-real-signature";
+  const fileUploadDescriptor={id:uploadId,destination:"native",upload:{method:"PUT",url,headers:{"content-type":"application/pdf"},expiresAt:new Date(Date.now()+900000).toISOString()}};
+  const fileUploadCompleted={id:fileId,name:"synthetic.pdf",contentType:"application/pdf",size:123,createdAt:new Date().toISOString()};
+  let transfers=0;
+  t.mock.method(globalThis,"fetch",async()=>{transfers++;throw Error("Adapter must not transfer bytes");});
+  const options={mcpOperations:["file_upload"],fileUploadDescriptor,fileUploadCompleted,mayDelegate:true,oauthScopes:"resources:read resources:write",advertisedAccess:["read","write"]};
+  const f=connectedFixture(options);
+  const listed=await handleIdentityOAuthMcp(rpc("tools/list"),f.env);
+  const tool=(await listed.json()).result.tools.find(tool=>tool.name==="lifespace.file_upload.task");
+  assert.ok(tool);
+  assert.deepEqual(tool.securitySchemes,[{type:"oauth2",scopes:["resources:read","resources:write"]}]);
+  assert.equal(tool.annotations.readOnlyHint,false);
+  assert.equal(tool.annotations.idempotentHint,false);
+  const direct=data=>({name:"lifespace.file_upload.task",arguments:{spaceId:"spc_synthetic",data}});
+  const delegated=data=>({name:"lifespace.execute_user_delegation",arguments:{delegationId:"dlg_synthetic",modelKey:"task",operation:"file_upload",data}});
+  const begin={phase:"begin",fieldKey:"attachment",name:"synthetic.pdf",contentType:"application/pdf",size:123};
+  const complete={phase:"complete",uploadId};
+  for(const build of [direct,delegated]){
+    for(const [data,expected] of [[begin,fileUploadDescriptor],[complete,fileUploadCompleted]]){
+      const reply=await handleIdentityOAuthMcp(rpc("tools/call",{params:build(data)}),f.env);
+      assert.equal(reply.status,200);
+      assert.equal(reply.headers.get("cache-control"),"no-store");
+      assert.deepEqual((await reply.json()).result.structuredContent,expected);
+    }
+  }
+  const calls=f.calls.filter(x=>x.service==="CORE"&&x.path.includes("/file-uploads"));
+  assert.equal(calls.length,2);
+  assert.deepEqual(JSON.parse(calls[0].init.body),{fieldKey:"attachment",name:"synthetic.pdf",contentType:"application/pdf",size:123});
+  assert.equal(calls[1].path,"/api/v1/spaces/spc_synthetic/models/task/file-uploads/"+uploadId+"/complete");
+  assert.equal(calls[1].init.body,undefined);
+  const readOnly=connectedFixture({...options,oauthScopes:"resources:read"});
+  for(const params of [direct(begin),delegated(complete)]){
+    // The live Core ingress supplies this current Server scope ceiling.
+    const reply=await handleIdentityOAuthMcp(rpc("tools/call",{headers:{
+      "x-lifespace-mcp-scope-ceiling":"resources:read resources:write",
+    },params}),readOnly.env);
+    assert.equal(reply.status,403);
+    assert.match(reply.headers.get("www-authenticate")||"",/error="insufficient_scope"/u);
+  }
+  assert.equal(readOnly.calls.some(x=>x.service==="CORE"&&(x.path.includes("/file-uploads")||x.path.endsWith("/invoke"))),false);
+  const denied=connectedFixture({...options,denied:true});
+  for(const params of [direct(begin),delegated(complete)]){
+    const reply=await handleIdentityOAuthMcp(rpc("tools/call",{params}),denied.env);
+    const result=(await reply.json()).result;
+    assert.equal(result.isError,true);
+    assert.ok(!JSON.stringify(result).includes(url));
+  }
   assert.equal(transfers,0);
 });
