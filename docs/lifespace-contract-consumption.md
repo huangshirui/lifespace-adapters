@@ -1,3 +1,7 @@
+## Native File read contract / 文件读取契约（candidate）
+
+Consumes Core Generic Operation Projection 0.4.0 and existing private native FileDownloadResponse. Core already owns record/file link, permission, policy, expiry and single-use consumption; the OAuth-selected Space and exact operation previously lacked a permitted file execution surface, so the minimal Core projection is necessary rather than an Adapter-specific permission check. Transport/content packaging and byte caps remain Adapter-owned. No ALOHA or client-specific dependency is introduced. Older Core catalogs without file_read remain supported; enable the new Server selection only after compatible Adapter deployment. PDF/image client handling and Staging byte integrity are independent acceptance gates.
+
 ## 2026-11-09 · Operation prerequisite scopes / 操作权限先决条件
 
 Current Core Generic Operation Projection `apps/core/mcp-operations.openapi.yaml` Candidate 0.2.0 carries `requiredScopes` alongside an opaque operation selector and canonical input JSON Schema. MCP must project this field to per-tool OAuth `securitySchemes`, never assume all Actions require write, and never treat a discoverable write tool as proof the token may execute it. Core's own current Agent Grant and Server policy gate preview; the unmodified token and runtime policy gate execution. Missing/invalid Core descriptor scopes fail closed, rather than reverting to a shadow Adapter-local classification.
