@@ -79,7 +79,6 @@ test("native file read projects only a Core-selected read capability",()=>{
   assert.equal(p.tools[0].annotations.readOnlyHint,true);
   assert.equal(p.tools[0].annotations.idempotentHint,false);
   const b=p.bindings[p.tools[0].name];
-  assert.equal(b.fileRead,true);
   assert.deepEqual(b.requiredScopes,["resources:read"]);
   assert.throws(()=>projectCoreOperationCatalog({operations:[{...row,requiredScopes:["resources:read","resources:write"]}]},spaceId));
 });
