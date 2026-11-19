@@ -907,7 +907,8 @@ export async function handleIdentityOAuthMcp(request, env) {
       ||rows.some(row=>{
         if(!row||typeof row!=="object"||Array.isArray(row)
           ||Object.keys(row).sort().join(",")!=="modelKey,operation,requiredScopes"
-          ||!DELEGATION_MODEL.test(row.modelKey||"")||!delegatedOp(row.operation)
+          ||typeof row.modelKey!=="string"||typeof row.operation!=="string"
+          ||!DELEGATION_MODEL.test(row.modelKey)||!delegatedOp(row.operation)
           ||(args.modelKey&&row.modelKey!==args.modelKey)||(args.operation&&row.operation!==args.operation)
           ||!Array.isArray(row.requiredScopes)||row.requiredScopes.length<1||row.requiredScopes.length>2
           ||row.requiredScopes[0]!=="resources:read"||new Set(row.requiredScopes).size!==row.requiredScopes.length
