@@ -49,7 +49,6 @@ export function projectCoreOperationCatalog(payload,spaceId) {
       inputSchema:structuredClone(row.inputSchema)});
     projected.bindings[name]={kind:"core-operation",spaceId,
       modelKey:row.modelKey,operationRef:row.operationRef,
-      ...(row.operation==="file_read"?{fileRead:true}:{}),
       requiredScopes:[...row.requiredScopes]};
   }
   projected.tools.sort((a,b)=>a.name.localeCompare(b.name));
