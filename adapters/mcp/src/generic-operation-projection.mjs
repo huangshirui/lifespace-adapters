@@ -4,7 +4,7 @@ const OP_REF=/^op_[a-f0-9]{64}$/u;
 const SPACE=/^spc_[A-Za-z0-9_-]+$/u;
 const MODEL=/^[a-z][a-z0-9_]{1,62}$/u;
 const ACTION=/^action:([a-z][a-z0-9_-]{0,62})$/u;
-const SIMPLE=new Set(["query","get","create","update","delete"]);
+const SIMPLE=new Set(["query","get","create","update","delete","file_read"]);
 const TOOL=/^[A-Za-z0-9_.-]{1,128}$/u;
 const MAX=128;
 export function projectCoreOperationCatalog(payload,spaceId) {
@@ -29,7 +29,7 @@ export function projectCoreOperationCatalog(payload,spaceId) {
       ||(row.requiredScopes.length!==1&&row.requiredScopes.length!==2)
       ||row.requiredScopes[0]!=="resources:read"
       ||(row.requiredScopes.length===2&&row.requiredScopes[1]!=="resources:write")
-      ||(["query","get"].includes(row.operation)&&row.requiredScopes.length!==1)
+      ||(["query","get","file_read"].includes(row.operation)&&row.requiredScopes.length!==1)
       ||(["create","update","delete"].includes(row.operation)&&row.requiredScopes.length!==2)
       ||refs.has(row.operationRef))throw Error("Invalid or duplicate Core operation");
     refs.add(row.operationRef);
@@ -44,7 +44,7 @@ export function projectCoreOperationCatalog(payload,spaceId) {
     const securitySchemes=[{type:"oauth2",scopes:[...row.requiredScopes]}];
     projected.tools.push({name,title:row.title,description:row.description,
       annotations:{readOnlyHint:read&&!action,destructiveHint:["update","delete"].includes(row.operation)
-        ||Boolean(action),idempotentHint:read&&!action,openWorldHint:false},
+        ||Boolean(action),idempotentHint:read&&!action&&row.operation!=="file_read",openWorldHint:false},
       securitySchemes,_meta:{securitySchemes:structuredClone(securitySchemes)},
       inputSchema:structuredClone(row.inputSchema)});
     projected.bindings[name]={kind:"core-operation",spaceId,

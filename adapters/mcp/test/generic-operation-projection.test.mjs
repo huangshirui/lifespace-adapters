@@ -71,3 +71,14 @@ test("core operation projection is fail-closed for duplicate, cross-Space and fo
   assert.throws(()=>buildCoreOperation(b,{spaceId,principalUserId:"usr_forbidden"}));
   assert.throws(()=>buildCoreOperation({...b,operationRef:"op_invalid"},{spaceId,data:{}}));
 });
+
+test("native file read projects only a Core-selected read capability",()=>{
+  const row={...operation("synthetic_file","file_read",10),requiredScopes:["resources:read"]};
+  const p=projectCoreOperationCatalog({operations:[row]},spaceId);
+  assert.equal(p.tools[0].name,"lifespace.file_read.synthetic_file");
+  assert.equal(p.tools[0].annotations.readOnlyHint,true);
+  assert.equal(p.tools[0].annotations.idempotentHint,false);
+  const b=p.bindings[p.tools[0].name];
+  assert.deepEqual(b.requiredScopes,["resources:read"]);
+  assert.throws(()=>projectCoreOperationCatalog({operations:[{...row,requiredScopes:["resources:read","resources:write"]}]},spaceId));
+});

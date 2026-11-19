@@ -256,7 +256,7 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
     [...catalogParams.keys()].every(k=>k==="modelKey"||k==="operation")
     &&catalogParams.getAll("modelKey").length===1&&catalogParams.getAll("operation").length<=1
     &&/^[a-z][a-z0-9_]{1,62}$/u.test(catalogModel||"")
-    &&(catalogOperation===null||/^(query|get|create|update|delete|action:[a-z][a-z0-9_-]{0,62})$/u.test(catalogOperation)));
+    &&(catalogOperation===null||/^(query|get|create|update|delete|file_read|action:[a-z][a-z0-9_-]{0,62})$/u.test(catalogOperation)));
   const genericCatalog = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_discovery\/operations$/u.test(catalogUrl.pathname)
     && method==="GET"&&validCatalogFilter&&!catalogUrl.hash;
   const genericCommand = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_operations\/op_[a-f0-9]{64}\/invoke$/u.test(path)
@@ -275,7 +275,9 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
     && (!personUrl.search || (method==="GET" && personCollection));
   const delegatedAction = Boolean(delegationId) && method==="POST"
     && /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records\/rec_[A-Za-z0-9_-]+\/actions\/[a-z][a-z0-9_-]{0,62}$/u.test(path);
-  if (!genericCatalog && !genericCommand && !delegatedAction && !delegatedPerson && !oauthRequest && !recordGet && !mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
+  const delegatedFileRead=Boolean(delegationId)&&method==="POST"
+    && /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records\/rec_[A-Za-z0-9_-]+\/file-downloads$/u.test(path);
+  if (!delegatedFileRead && !genericCatalog && !genericCommand && !delegatedAction && !delegatedPerson && !oauthRequest && !recordGet && !mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
     return { error: "CORE_PATH_REJECTED" };
   }
   let response;
@@ -293,9 +295,9 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
   if (!response.ok) {
     // An invalid Canonical Query is a caller error, not a Core outage.
     // Never forward Core's raw error body: it may contain private details.
-    if ((genericCommand || delegatedAction || delegatedPerson || path.endsWith("/records/query") || mutationPath)
+    if ((genericCommand || delegatedFileRead || delegatedAction || delegatedPerson || path.endsWith("/records/query") || mutationPath)
       && (response.status === 400 || response.status === 422)) {
-      return { error: (genericCommand || delegatedAction || delegatedPerson) ? "INVALID_OPERATION_ARGUMENTS"
+      return { error: (genericCommand || delegatedFileRead || delegatedAction || delegatedPerson) ? "INVALID_OPERATION_ARGUMENTS"
         : mutationPath ? "INVALID_MUTATION_ARGUMENTS" : "INVALID_QUERY_ARGUMENTS" };
     }
     if ((genericCommand || delegatedAction || delegatedPerson || mutationPath) && response.status === 409) return { error: "RECORD_VERSION_CONFLICT" };
@@ -322,7 +324,7 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
 // These selectors are protocol name parsing, not a derivation of permissions
 // or Core's opaque reference. Core owns the current filtered descriptors.
 function toolSelector(name){
-  const simple=/^lifespace\.(query|get|create|update|delete)\.([a-z][a-z0-9_]{1,62})$/u.exec(name);
+  const simple=/^lifespace\.(query|get|create|update|delete|file_read)\.([a-z][a-z0-9_]{1,62})$/u.exec(name);
   if(simple)return {modelKey:simple[2],operation:simple[1]};
   const action=/^lifespace\.action\.([a-z][a-z0-9_]{1,62})\.([a-z][a-z0-9_-]{0,62})$/u.exec(name);
   return action?{modelKey:action[1],operation:"action:"+action[2]}:null;
@@ -341,7 +343,7 @@ async function currentToolProjection(env,coreToken,selectedSpace,filter){
 const DELEGATION_MODEL = /^[a-z][a-z0-9_]{1,62}$/u;
 const DELEGATION_ID = /^dlg_[A-Za-z0-9_-]+$/u;
 const REQUEST_ID = /^arq_[a-f0-9]{32}$/u;
-const DELEGATED_OPS = ["get", "query", "create", "update", "delete"];
+const DELEGATED_OPS = ["get", "query", "create", "update", "delete", "file_read"];
 const DELEGATED_ACTION = /^action:([a-z][a-z0-9_-]{0,62})$/u;
 const delegatedOp = value => typeof value === "string"
   && (DELEGATED_OPS.includes(value) || DELEGATED_ACTION.test(value));
@@ -477,7 +479,7 @@ function userDelegationTools() {
     { name: "lifespace.execute_user_delegation",
       ...oauthToolSecurity(),
       title: "Execute Account-Approved LifeSpace User Delegation",
-      description: "Execute an exact Core model operation under a Delegation independently approved by the signed-in LifeSpace Account User. Account selects one-use, bounded time-limited repeat, or until-revoked lifetime; the Agent cannot choose or widen it. Native/Person and Provider-backed External operations stay restricted by current OAuth, User/Agent, Space, Model and policy authority; Core rejects revoked, expired, used, or cross-operation Delegations. External one-use write authority is consumed before the single Provider attempt, including on failure; repeated grants permit independently authorized attempts without exactly-once guarantees.",
+      description: "Execute an exact Core model operation under a Delegation independently approved by the signed-in LifeSpace Account User. Account selects one-use, bounded time-limited repeat, or until-revoked lifetime; the Agent cannot choose or widen it. Native/Person and Provider-backed External operations stay restricted by current OAuth, User/Agent, Space, Model and policy authority; Core rejects revoked, expired, used, or cross-operation Delegations. External one-use write authority is consumed before the single Provider attempt, including on failure; repeated grants permit independently authorized attempts without exactly-once guarantees. For file_read, Core returns a short-lived download URL for the authorized client to fetch directly. Treat it as a secret; do not persist or share it.",
       annotations:{readOnlyHint:false,destructiveHint:true,idempotentHint:false,openWorldHint:false},
       inputSchema:{type:"object",additionalProperties:false,required:["delegationId","modelKey","operation"],
         properties:{
@@ -539,6 +541,14 @@ function delegatedCoreOperation(spaceId, args) {
       || !Number.isSafeInteger(args.data.version) || args.data.version<1) return null;
     return {method:"POST",path:base+"/"+encodeURIComponent(id)+"/actions/"
       +encodeURIComponent(action[1]),body:args.data};
+  }
+  if (args.operation === "file_read") {
+    if (!/^rec_[A-Za-z0-9_-]+$/u.test(id||"") || !args.data
+      || typeof args.data!=="object" || Array.isArray(args.data)
+      || Object.keys(args.data).some(k=>!["fieldKey","fileId"].includes(k))
+      || !/^[a-z][A-Za-z0-9]{0,62}$/u.test(args.data.fieldKey||"")
+      || !/^fil_[a-f0-9]{32}$/u.test(args.data.fileId||"")) return null;
+    return {method:"POST",path:base+"/"+encodeURIComponent(id)+"/file-downloads",body:args.data};
   }
   if (args.operation === "get") {
     if (!/^rec_[A-Za-z0-9_-]+$/u.test(id||"") || args.data!==undefined) return null;
@@ -863,7 +873,7 @@ export async function handleIdentityOAuthMcp(request, env) {
         || !DELEGATION_MODEL.test(args.modelKey||"") || !delegatedOp(args.operation)
         || typeof args.reason!=="string" || args.reason.trim().length<4 || args.reason.trim().length>250)
         return rpcError(message.id,-32602,"Invalid User Delegation request");
-      if (!["query","get"].includes(args.operation)
+      if (!["query","get","file_read"].includes(args.operation)
         && !authorized.context.scopes.includes("resources:write"))
         return writeScopeStepUp(message.id,config,request,modern);
       const state=message.params.requestState;
@@ -915,7 +925,7 @@ export async function handleIdentityOAuthMcp(request, env) {
     } else {
       const next=delegatedCoreOperation(space,args);
       if (!next) return rpcError(message.id,-32602,"Invalid Delegation execution arguments");
-      if (!["query","get"].includes(args.operation)
+      if (!["query","get","file_read"].includes(args.operation)
         && !authorized.context.scopes.includes("resources:write"))
         return writeScopeStepUp(message.id,config,request,modern);
       path=next.path;method=next.method;payload=next.body;delegation=args.delegationId;
