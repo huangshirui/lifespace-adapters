@@ -256,7 +256,7 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
     [...catalogParams.keys()].every(k=>k==="modelKey"||k==="operation")
     &&catalogParams.getAll("modelKey").length===1&&catalogParams.getAll("operation").length<=1
     &&/^[a-z][a-z0-9_]{1,62}$/u.test(catalogModel||"")
-    &&(catalogOperation===null||/^(query|get|create|update|delete|file_read|action:[a-z][a-z0-9_-]{0,62})$/u.test(catalogOperation)));
+    &&(catalogOperation===null||/^(query|get|create|update|delete|file_read|file_upload|action:[a-z][a-z0-9_-]{0,62})$/u.test(catalogOperation)));
   const genericCatalog = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_discovery\/operations$/u.test(catalogUrl.pathname)
     && method==="GET"&&validCatalogFilter&&!catalogUrl.hash;
   const genericCommand = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_operations\/op_[a-f0-9]{64}\/invoke$/u.test(path)
@@ -277,7 +277,9 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
     && /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records\/rec_[A-Za-z0-9_-]+\/actions\/[a-z][a-z0-9_-]{0,62}$/u.test(path);
   const delegatedFileRead=Boolean(delegationId)&&method==="POST"
     && /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records\/rec_[A-Za-z0-9_-]+\/file-downloads$/u.test(path);
-  if (!delegatedFileRead && !genericCatalog && !genericCommand && !delegatedAction && !delegatedPerson && !oauthRequest && !recordGet && !mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
+  const delegatedFileUpload=Boolean(delegationId)&&method==="POST"
+    && /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/file-uploads(?:\/upl_[a-f0-9]{32}\/complete)?$/u.test(path);
+  if (!delegatedFileUpload && !delegatedFileRead && !genericCatalog && !genericCommand && !delegatedAction && !delegatedPerson && !oauthRequest && !recordGet && !mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
     return { error: "CORE_PATH_REJECTED" };
   }
   let response;
@@ -295,9 +297,9 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
   if (!response.ok) {
     // An invalid Canonical Query is a caller error, not a Core outage.
     // Never forward Core's raw error body: it may contain private details.
-    if ((genericCommand || delegatedFileRead || delegatedAction || delegatedPerson || path.endsWith("/records/query") || mutationPath)
+    if ((genericCommand || delegatedFileUpload || delegatedFileRead || delegatedAction || delegatedPerson || path.endsWith("/records/query") || mutationPath)
       && (response.status === 400 || response.status === 422)) {
-      return { error: (genericCommand || delegatedFileRead || delegatedAction || delegatedPerson) ? "INVALID_OPERATION_ARGUMENTS"
+      return { error: (genericCommand || delegatedFileUpload || delegatedFileRead || delegatedAction || delegatedPerson) ? "INVALID_OPERATION_ARGUMENTS"
         : mutationPath ? "INVALID_MUTATION_ARGUMENTS" : "INVALID_QUERY_ARGUMENTS" };
     }
     if ((genericCommand || delegatedAction || delegatedPerson || mutationPath) && response.status === 409) return { error: "RECORD_VERSION_CONFLICT" };
@@ -324,7 +326,7 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
 // These selectors are protocol name parsing, not a derivation of permissions
 // or Core's opaque reference. Core owns the current filtered descriptors.
 function toolSelector(name){
-  const simple=/^lifespace\.(query|get|create|update|delete|file_read)\.([a-z][a-z0-9_]{1,62})$/u.exec(name);
+  const simple=/^lifespace\.(query|get|create|update|delete|file_read|file_upload)\.([a-z][a-z0-9_]{1,62})$/u.exec(name);
   if(simple)return {modelKey:simple[2],operation:simple[1]};
   const action=/^lifespace\.action\.([a-z][a-z0-9_]{1,62})\.([a-z][a-z0-9_-]{0,62})$/u.exec(name);
   return action?{modelKey:action[1],operation:"action:"+action[2]}:null;
@@ -343,7 +345,7 @@ async function currentToolProjection(env,coreToken,selectedSpace,filter){
 const DELEGATION_MODEL = /^[a-z][a-z0-9_]{1,62}$/u;
 const DELEGATION_ID = /^dlg_[A-Za-z0-9_-]+$/u;
 const REQUEST_ID = /^arq_[a-f0-9]{32}$/u;
-const DELEGATED_OPS = ["get", "query", "create", "update", "delete", "file_read"];
+const DELEGATED_OPS = ["get", "query", "create", "update", "delete", "file_read", "file_upload"];
 const DELEGATED_ACTION = /^action:([a-z][a-z0-9_-]{0,62})$/u;
 const delegatedOp = value => typeof value === "string"
   && (DELEGATED_OPS.includes(value) || DELEGATED_ACTION.test(value));
@@ -479,7 +481,7 @@ function userDelegationTools() {
     { name: "lifespace.execute_user_delegation",
       ...oauthToolSecurity(),
       title: "Execute Account-Approved LifeSpace User Delegation",
-      description: "Execute an exact Core model operation under a Delegation independently approved by the signed-in LifeSpace Account User. Account selects one-use, bounded time-limited repeat, or until-revoked lifetime; the Agent cannot choose or widen it. Native/Person and Provider-backed External operations stay restricted by current OAuth, User/Agent, Space, Model and policy authority; Core rejects revoked, expired, used, or cross-operation Delegations. External one-use write authority is consumed before the single Provider attempt, including on failure; repeated grants permit independently authorized attempts without exactly-once guarantees. For file_read, Core returns a short-lived download URL for the authorized client to fetch directly. Treat it as a secret; do not persist or share it.",
+      description: "Execute an exact Core model operation under a Delegation independently approved by the signed-in LifeSpace Account User. Account selects one-use, bounded time-limited repeat, or until-revoked lifetime; the Agent cannot choose or widen it. Native/Person and Provider-backed External operations stay restricted by current OAuth, User/Agent, Space, Model and policy authority; Core rejects revoked, expired, used, or cross-operation Delegations. External one-use write authority is consumed before the single Provider attempt, including on failure; repeated grants permit independently authorized attempts without exactly-once guarantees. For file_read, Core returns a short-lived direct download URL. For file_upload, use data.phase=begin with fieldKey, optional recordId, name, contentType and size; PUT directly using the returned URL and headers, then data.phase=complete with uploadId. Upload requires timed or until-revoked Delegation and does not grant record mutation. Treat signed URLs as secrets; do not persist or share them.",
       annotations:{readOnlyHint:false,destructiveHint:true,idempotentHint:false,openWorldHint:false},
       inputSchema:{type:"object",additionalProperties:false,required:["delegationId","modelKey","operation"],
         properties:{
@@ -541,6 +543,20 @@ function delegatedCoreOperation(spaceId, args) {
       || !Number.isSafeInteger(args.data.version) || args.data.version<1) return null;
     return {method:"POST",path:base+"/"+encodeURIComponent(id)+"/actions/"
       +encodeURIComponent(action[1]),body:args.data};
+  }
+  if (args.operation === "file_upload") {
+    const data=args.data;
+    if(id!==undefined||!data||typeof data!=="object"||Array.isArray(data))return null;
+    const uploadBase=base.slice(0,-8)+"/file-uploads";
+    if(data.phase==="begin"){
+      if(Object.keys(data).some(k=>!["phase","fieldKey","recordId","name","contentType","size"].includes(k)))return null;
+      const {phase,...payload}=data;
+      return {method:"POST",path:uploadBase,body:payload};
+    }
+    if(data.phase==="complete"&&Object.keys(data).length===2
+      &&typeof data.uploadId==="string"&&/^upl_[a-f0-9]{32}$/u.test(data.uploadId))
+      return {method:"POST",path:uploadBase+"/"+encodeURIComponent(data.uploadId)+"/complete"};
+    return null;
   }
   if (args.operation === "file_read") {
     if (!/^rec_[A-Za-z0-9_-]+$/u.test(id||"") || !args.data
