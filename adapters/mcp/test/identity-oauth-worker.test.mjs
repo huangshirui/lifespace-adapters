@@ -1402,9 +1402,14 @@ test("native file_upload projects signed PUT session and completion without tran
   assert.equal(calls[1].init.body,undefined);
   const readOnly=connectedFixture({...options,oauthScopes:"resources:read"});
   for(const params of [direct(begin),delegated(complete)]){
-    const reply=await handleIdentityOAuthMcp(rpc("tools/call",{params}),readOnly.env);
+    // The live Core ingress supplies this current Server scope ceiling.
+    const reply=await handleIdentityOAuthMcp(rpc("tools/call",{headers:{
+      "x-lifespace-mcp-scope-ceiling":"resources:read resources:write",
+    },params}),readOnly.env);
     assert.equal(reply.status,403);
+    assert.match(reply.headers.get("www-authenticate")||"",/error="insufficient_scope"/u);
   }
+  assert.equal(readOnly.calls.some(x=>x.service==="CORE"&&(x.path.includes("/file-uploads")||x.path.endsWith("/invoke"))),false);
   const denied=connectedFixture({...options,denied:true});
   for(const params of [direct(begin),delegated(complete)]){
     const reply=await handleIdentityOAuthMcp(rpc("tools/call",{params}),denied.env);
