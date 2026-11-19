@@ -242,7 +242,7 @@ async function coreExecution(authorized, request, config, env, delegationId = nu
   return validateExecutionData(result?.data, authorized);
 }
 
-async function coreJson(env, coreToken, path, method = "GET", body, delegationId = null) {
+async function coreJson(env, coreToken, path, method = "GET", body, delegationId = null, trustedResource = null) {
   const recordGet = method === "GET" && /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records\/rec_[A-Za-z0-9_-]+$/u.test(path);
   const mutationPath = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records(?:\/rec_[A-Za-z0-9_-]+)?$/u.test(path)
     && (method === "POST" && path.endsWith("/records") || ["PATCH", "DELETE"].includes(method) && !path.endsWith("/records"));
@@ -291,6 +291,7 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
       method, headers: {
         authorization: "Bearer " + coreToken,
         ...(delegationId ? { "x-lifespace-delegation-id": delegationId } : {}),
+        ...(trustedResource ? { "x-lifespace-mcp-resource": trustedResource } : {}),
         accept: "application/json",
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
@@ -753,6 +754,69 @@ async function parseMcpEnvelope(request) {
   return checked.error?{error:checked.error}:{message,modern:checked.modern};
 }
 
+// Separate opaque Agent credential transport. No OAuth exchange, User ID,
+// trusted confirmation endpoint or direct fallback. Core owns all verification.
+async function handleTrustedMcp(request,config,env,bearer){
+  const space=request.headers.get("x-lifespace-space-id"),selector=request.headers.get("x-lifespace-delegation-id");
+  if(!/^spc_[A-Za-z0-9_-]{1,128}$/u.test(space||"")||!/^dlg_[A-Za-z0-9_-]{1,128}$/u.test(selector||""))
+    return json({error:"Explicit Space and Delegation required"},403);
+  if(typeof env?.CORE?.fetch!=="function")return json({error:"CORE_UNAVAILABLE"},503);
+  const token=bearer.slice(7),base="/api/v1/spaces/"+encodeURIComponent(space);
+  const envelope=await parseMcpEnvelope(request);
+  // Authenticate every message including handshake, without exposing any
+  // record or model schema to an invalid credential/selector. A targeted
+  // lookup keeps initialization bounded and does not consume a Delegation.
+  const getProjection=async(filter)=>{
+    const response=await coreJson(env,token,base+"/_discovery/operations"
+      +(filter?"?"+new URLSearchParams(filter):""),"GET",undefined,selector,config.resource);
+    if(response.error)return response;
+    try{return {projected:projectCoreOperationCatalog(response.payload?.data,space)};}
+    catch{return {error:"CORE_OPERATION_CATALOG_INVALID"};}
+  };
+  const authError=outcome=>json({error:outcome.error},
+    outcome.error==="CORE_PERMISSION_DENIED"||outcome.error==="CORE_NOT_FOUND"?403:503);
+  if(envelope.error){
+    const check=await getProjection({modelKey:"mcp_context_probe"});
+    return check.error?authError(check):envelope.error;
+  }
+  const {message,modern}=envelope;
+  const validCall=message.method==="tools/call"&&message.params&&typeof message.params==="object"
+    &&!Array.isArray(message.params)&&typeof message.params.name==="string"
+    &&message.params.arguments&&typeof message.params.arguments==="object"&&!Array.isArray(message.params.arguments);
+  const filter=validCall?toolSelector(message.params.name):null;
+  const current=await getProjection(message.method==="tools/list"?undefined:filter||{modelKey:"mcp_context_probe"});
+  if(current.error)return authError(current);
+  if(!modern&&message.method==="notifications/initialized"&&message.id===undefined)return new Response(null,{status:202});
+  if(message.id===undefined)return rpcError(null,-32600,"Unexpected notification",400);
+  if(modern&&message.method==="server/discover")
+    return rpcResult(message.id,{supportedVersions:SUPPORTED_VERSIONS,capabilities:{tools:{listChanged:false}},ttlMs:0,cacheScope:"private"},true);
+  if(!modern&&message.method==="initialize")
+    return rpcResult(message.id,{protocolVersion:VERSION,capabilities:{tools:{listChanged:false}},serverInfo:SERVER_INFO});
+  if(!modern&&message.method==="ping")return rpcResult(message.id,{});
+  if(message.method==="tools/list"){
+    if(message.params&&(typeof message.params!=="object"||Array.isArray(message.params)
+      ||Object.keys(message.params).some(key=>key!=="cursor"&&!(modern&&key==="_meta"))||message.params.cursor))
+      return rpcError(message.id,-32602,"Unsupported pagination parameters");
+    const tools=current.projected.tools.map(tool=>{
+      // The opaque credential was explicitly configured; do not advertise
+      // OAuth step-up on this separate authenticated transport.
+      const {securitySchemes,_meta,...rest}=tool;
+      return rest;
+    });
+    return rpcResult(message.id,{tools,...(modern?{ttlMs:0,cacheScope:"private"}:{})},modern);
+  }
+  if(message.method!=="tools/call")return rpcError(message.id,-32601,"Method not found",modern?404:200);
+  if(!validCall||!filter||message.params.requestState!==undefined||message.params.inputResponses!==undefined)
+    return rpcError(message.id,-32602,"Invalid trusted operation invocation");
+  const binding=Object.hasOwn(current.projected.bindings,message.params.name)?current.projected.bindings[message.params.name]:undefined;
+  if(!binding)return rpcError(message.id,-32602,"Tool is not in the currently authorized projection");
+  let operation;
+  try{operation=buildCoreOperation(binding,message.params.arguments);}
+  catch{return rpcError(message.id,-32602,"Invalid arguments for current Core operation");}
+  if(!operation.path.startsWith(base+"/"))return rpcError(message.id,-32602,"Selected Space mismatch");
+  return rpcResult(message.id,coreToolResult(await coreJson(env,token,operation.path,operation.method,operation.body,selector,config.resource)),modern);
+}
+
 export async function handleIdentityOAuthMcp(request, env) {
   const url = new URL(request.url);
   if (env?.MCP_RESOURCE_ORIGIN !== undefined) {
@@ -781,6 +845,8 @@ export async function handleIdentityOAuthMcp(request, env) {
   // requests the bounded envelope only chooses an authentication path;
   // protocol errors are returned only after authentication.
   const bearer=request.headers.get("authorization")||"";
+  if(/^Bearer lsp_agt_[A-Za-z0-9_-]+$/u.test(bearer)&&bearer.length<=MAX_TOKEN_LENGTH+7)
+    return handleTrustedMcp(request,config,env,bearer);
   if(!/^Bearer lsp_oat_[A-Za-z0-9_-]+$/u.test(bearer)||bearer.length>MAX_TOKEN_LENGTH+7)
     return authFailure(config,request);
   if(typeof env?.OAUTH_RESOURCE_SERVER_SECRET!=="string"||env.OAUTH_RESOURCE_SERVER_SECRET.length<32
