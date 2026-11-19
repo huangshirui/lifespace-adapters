@@ -308,7 +308,7 @@ test("host-origin mismatch, CORS origin, query/path confusion and wrong transpor
 });
 
 
-function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", introspectionOverrides = {}, modelDetailStatus = 200, ignoreCatalogFilter = false, legacyIdentity = false, combinedContextOverrides = {}, combinedStatus = null, fileReadDescriptor = null, fileUploadDescriptor = null, fileUploadCompleted = null } = {}) {
+function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", introspectionOverrides = {}, modelDetailStatus = 200, ignoreCatalogFilter = false, legacyIdentity = false, combinedContextOverrides = {}, combinedStatus = null, fileReadDescriptor = null, fileUploadDescriptor = null, fileUploadCompleted = null, eligibilityResponse = null, zeroDirectCatalog = false, trustedAgent = false } = {}) {
   const calls = [];
   let tokenActive = true;
   let currentApprovalStatus=approvalStatus;
@@ -406,8 +406,13 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
     CORE: { fetch: async (url, init) => {
       const path = new URL(url).pathname;
       calls.push({ service: "CORE", path, url:String(url), init });
-      assert.equal(init.headers.authorization, "Bearer " + signToken);
+      assert.equal(init.headers.authorization, trustedAgent?"Bearer lsp_agt_synthetic":"Bearer " + signToken);
       assert.ok(!JSON.stringify(init.headers).includes(TOKEN));
+      if(trustedAgent){
+        assert.equal(init.headers["x-lifespace-mcp-resource"],RESOURCE);
+        assert.equal(init.headers["x-lifespace-delegation-id"],"dlg_synthetic");
+        if(!tokenActive)return Response.json({error:"forbidden"},{status:403});
+      }
       if (denied && path.endsWith("/records/query")) return Response.json({ error: "forbidden" }, { status: 403 });
       if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/oauth-delegation-requests" && init.method === "POST") {
         const v = JSON.parse(init.body);
@@ -446,7 +451,8 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
           return Response.json({error:"synthetic Core unavailability"},{status:discoveryStatus});
         const params=new URL(url).searchParams;
         const model=params.get("modelKey"),op=params.get("operation");
-        return Response.json({data:{operations:syntheticCatalog.filter(row=>
+        if(params.get("mode")==="delegation_request"&&eligibilityResponse!==null)return Response.json({data:eligibilityResponse});
+        return Response.json({data:{operations:(zeroDirectCatalog?[]:syntheticCatalog).filter(row=>
           ignoreCatalogFilter||((!model||row.modelKey===model)&&(!op||row.operation===op)))}});
       }
       const invocation = /^\/api\/v1\/spaces\/spc_synthetic\/_operations\/(op_[a-f0-9]{64})\/invoke$/u.exec(path);
@@ -971,6 +977,60 @@ test("Get-only Server lists only Native Get and executes exact record read", asy
     params: { name: "lifespace.query.task", arguments: { spaceId: "spc_synthetic" } },
   }), f.env);
   assert.equal((await forbidden.json()).error.code, -32602);
+});
+
+test("trusted MCP Agent uses explicit represented Core context without OAuth exchange",async()=>{
+  const f=connectedFixture({trustedAgent:true});
+  const headers={authorization:"Bearer lsp_agt_synthetic","x-lifespace-space-id":"spc_synthetic","x-lifespace-delegation-id":"dlg_synthetic"};
+  const call=(method,params={})=>handleIdentityOAuthMcp(rpc(method,{headers,params}),f.env);
+  const init=await call("initialize");
+  assert.equal(init.status,200);
+  const listed=await call("tools/list");
+  assert.equal(listed.status,200);
+  const tools=(await listed.json()).result.tools;
+  assert.ok(tools.some(x=>x.name==="lifespace.query.task"));
+  assert.ok(tools.every(x=>!x.securitySchemes&&!x.name.includes("user_delegation")));
+  const invoked=await call("tools/call",{name:"lifespace.query.task",arguments:{spaceId:"spc_synthetic",data:{}}});
+  assert.equal(invoked.status,200);
+  assert.equal((await invoked.json()).result.isError,undefined);
+  const wrong=await call("tools/call",{name:"lifespace.query.task",arguments:{spaceId:"spc_other",data:{}}});
+  assert.equal((await wrong.json()).error.code,-32602);
+  const noSelector=await handleIdentityOAuthMcp(rpc("tools/list",{headers:{authorization:headers.authorization,"x-lifespace-space-id":"spc_synthetic"}}),f.env);
+  assert.equal(noSelector.status,403);
+  const approval=await call("tools/call",{name:"lifespace.request_user_delegation",arguments:{modelKey:"task",operation:"query",reason:"no trusted confirmation through MCP"}});
+  assert.equal((await approval.json()).error.code,-32602);
+  assert.ok(f.calls.every(x=>x.service==="CORE"));
+});
+
+test("delegation eligibility is separate metadata and never creates direct tool bindings",async()=>{
+  const eligibleOperations=[{modelKey:"task",operation:"query",requiredScopes:["resources:read"]}];
+  const f=connectedFixture({mayDelegate:true,zeroDirectCatalog:true,eligibilityResponse:{eligibleOperations}});
+  const list=await handleIdentityOAuthMcp(rpc("tools/list"),f.env);
+  const tools=(await list.json()).result.tools;
+  assert.ok(tools.some(t=>t.name==="lifespace.discover_user_delegation"));
+  assert.ok(!tools.some(t=>t.name==="lifespace.query.task"));
+  const call=(fixture,args)=>handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.discover_user_delegation",arguments:args,
+  }}),fixture.env);
+  const preview=await call(f,{modelKey:"task",operation:"query"});
+  assert.deepEqual(JSON.parse((await preview.json()).result.content[0].text),{eligibleOperations});
+  const full=await call(f,{});
+  assert.deepEqual(JSON.parse((await full.json()).result.content[0].text),{eligibleOperations});
+  const bad=await call(f,{operation:"query"});
+  assert.equal((await bad.json()).error.code,-32602);
+  const direct=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.query.task",arguments:{spaceId:"spc_synthetic",data:{}},
+  }}),f.env);
+  assert.equal((await direct.json()).error.code,-32602);
+  const disabled=connectedFixture({mayDelegate:false});
+  assert.equal((await (await call(disabled,{})).json()).error.code,-32602);
+  // A legacy or malformed response cannot be interpreted as eligibility.
+  for(const response of [null,{eligibleOperations:[{...eligibleOperations[0],operationRef:"op_secret"}]},
+    {eligibleOperations:[{modelKey:"task",operation:"create",requiredScopes:["resources:read","resources:write"]}]}]){
+    const fixture=connectedFixture({mayDelegate:true,eligibilityResponse:response});
+    const result=(await (await call(fixture,{})).json()).result;
+    assert.equal(result.isError,true);
+  }
 });
 
 test("third-party OAuth may request LifeSpace Account URL, status and explicit represented execution", async () => {

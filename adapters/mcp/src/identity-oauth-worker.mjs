@@ -242,7 +242,7 @@ async function coreExecution(authorized, request, config, env, delegationId = nu
   return validateExecutionData(result?.data, authorized);
 }
 
-async function coreJson(env, coreToken, path, method = "GET", body, delegationId = null) {
+async function coreJson(env, coreToken, path, method = "GET", body, delegationId = null, trustedResource = null) {
   const recordGet = method === "GET" && /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records\/rec_[A-Za-z0-9_-]+$/u.test(path);
   const mutationPath = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records(?:\/rec_[A-Za-z0-9_-]+)?$/u.test(path)
     && (method === "POST" && path.endsWith("/records") || ["PATCH", "DELETE"].includes(method) && !path.endsWith("/records"));
@@ -251,12 +251,15 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
       || method === "GET" && /\/arq_[a-f0-9]{32}$/u.test(path));
   const catalogUrl=new URL("https://core.internal"+path);
   const catalogParams=catalogUrl.searchParams;
-  const catalogModel=catalogParams.get("modelKey"),catalogOperation=catalogParams.get("operation");
+  const catalogModel=catalogParams.get("modelKey"),catalogOperation=catalogParams.get("operation"),catalogMode=catalogParams.get("mode");
   const validCatalogFilter=!catalogUrl.search||(
-    [...catalogParams.keys()].every(k=>k==="modelKey"||k==="operation")
-    &&catalogParams.getAll("modelKey").length===1&&catalogParams.getAll("operation").length<=1
-    &&/^[a-z][a-z0-9_]{1,62}$/u.test(catalogModel||"")
-    &&(catalogOperation===null||/^(query|get|create|update|delete|file_read|file_upload|action:[a-z][a-z0-9_-]{0,62})$/u.test(catalogOperation)));
+    [...catalogParams.keys()].every(k=>k==="modelKey"||k==="operation"||k==="mode")
+    &&catalogParams.getAll("modelKey").length<=1&&catalogParams.getAll("operation").length<=1
+    &&catalogParams.getAll("mode").length<=1
+    &&(catalogMode===null||catalogMode==="delegation_request")
+    &&(catalogMode==="delegation_request"||catalogModel!==null)
+    &&(catalogModel===null||/^[a-z][a-z0-9_]{1,62}$/u.test(catalogModel))
+    &&(catalogOperation===null||(catalogModel!==null&&/^(query|get|create|update|delete|file_read|file_upload|action:[a-z][a-z0-9_-]{0,62})$/u.test(catalogOperation))));
   const genericCatalog = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_discovery\/operations$/u.test(catalogUrl.pathname)
     && method==="GET"&&validCatalogFilter&&!catalogUrl.hash;
   const genericCommand = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_operations\/op_[a-f0-9]{64}\/invoke$/u.test(path)
@@ -288,6 +291,7 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
       method, headers: {
         authorization: "Bearer " + coreToken,
         ...(delegationId ? { "x-lifespace-delegation-id": delegationId } : {}),
+        ...(trustedResource ? { "x-lifespace-mcp-resource": trustedResource } : {}),
         accept: "application/json",
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
@@ -460,6 +464,15 @@ function oauthToolSecurity() {
 }
 function userDelegationTools() {
   return [
+    { name:"lifespace.discover_user_delegation",
+      ...oauthToolSecurity(),
+      title:"Discover LifeSpace User Delegation Eligibility",
+      description:"List current Model operations eligible to request independent User approval, even without direct Agent Data Grant. This is non-authorizing metadata only, not executable tools, input schemas, or record data. Use request_user_delegation and execute_user_delegation separately.",
+      annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+      inputSchema:{type:"object",additionalProperties:false,properties:{
+        modelKey:{type:"string",pattern:"^[a-z][a-z0-9_]{1,62}$"},operation:delegatedOpSchema,
+      },dependentRequired:{operation:["modelKey"]}},
+    },
     { name: "lifespace.request_user_delegation",
       ...oauthToolSecurity(),
       title: "Request LifeSpace User Delegation",
@@ -741,6 +754,69 @@ async function parseMcpEnvelope(request) {
   return checked.error?{error:checked.error}:{message,modern:checked.modern};
 }
 
+// Separate opaque Agent credential transport. No OAuth exchange, User ID,
+// trusted confirmation endpoint or direct fallback. Core owns all verification.
+async function handleTrustedMcp(request,config,env,bearer){
+  const space=request.headers.get("x-lifespace-space-id"),selector=request.headers.get("x-lifespace-delegation-id");
+  if(!/^spc_[A-Za-z0-9_-]{1,128}$/u.test(space||"")||!/^dlg_[A-Za-z0-9_-]{1,128}$/u.test(selector||""))
+    return json({error:"Explicit Space and Delegation required"},403);
+  if(typeof env?.CORE?.fetch!=="function")return json({error:"CORE_UNAVAILABLE"},503);
+  const token=bearer.slice(7),base="/api/v1/spaces/"+encodeURIComponent(space);
+  const envelope=await parseMcpEnvelope(request);
+  // Authenticate every message including handshake, without exposing any
+  // record or model schema to an invalid credential/selector. A targeted
+  // lookup keeps initialization bounded and does not consume a Delegation.
+  const getProjection=async(filter)=>{
+    const response=await coreJson(env,token,base+"/_discovery/operations"
+      +(filter?"?"+new URLSearchParams(filter):""),"GET",undefined,selector,config.resource);
+    if(response.error)return response;
+    try{return {projected:projectCoreOperationCatalog(response.payload?.data,space)};}
+    catch{return {error:"CORE_OPERATION_CATALOG_INVALID"};}
+  };
+  const authError=outcome=>json({error:outcome.error},
+    outcome.error==="CORE_PERMISSION_DENIED"||outcome.error==="CORE_NOT_FOUND"?403:503);
+  if(envelope.error){
+    const check=await getProjection({modelKey:"mcp_context_probe"});
+    return check.error?authError(check):envelope.error;
+  }
+  const {message,modern}=envelope;
+  const validCall=message.method==="tools/call"&&message.params&&typeof message.params==="object"
+    &&!Array.isArray(message.params)&&typeof message.params.name==="string"
+    &&message.params.arguments&&typeof message.params.arguments==="object"&&!Array.isArray(message.params.arguments);
+  const filter=validCall?toolSelector(message.params.name):null;
+  const current=await getProjection(message.method==="tools/list"?undefined:filter||{modelKey:"mcp_context_probe"});
+  if(current.error)return authError(current);
+  if(!modern&&message.method==="notifications/initialized"&&message.id===undefined)return new Response(null,{status:202});
+  if(message.id===undefined)return rpcError(null,-32600,"Unexpected notification",400);
+  if(modern&&message.method==="server/discover")
+    return rpcResult(message.id,{supportedVersions:SUPPORTED_VERSIONS,capabilities:{tools:{listChanged:false}},ttlMs:0,cacheScope:"private"},true);
+  if(!modern&&message.method==="initialize")
+    return rpcResult(message.id,{protocolVersion:VERSION,capabilities:{tools:{listChanged:false}},serverInfo:SERVER_INFO});
+  if(!modern&&message.method==="ping")return rpcResult(message.id,{});
+  if(message.method==="tools/list"){
+    if(message.params&&(typeof message.params!=="object"||Array.isArray(message.params)
+      ||Object.keys(message.params).some(key=>key!=="cursor"&&!(modern&&key==="_meta"))||message.params.cursor))
+      return rpcError(message.id,-32602,"Unsupported pagination parameters");
+    const tools=current.projected.tools.map(tool=>{
+      // The opaque credential was explicitly configured; do not advertise
+      // OAuth step-up on this separate authenticated transport.
+      const {securitySchemes,_meta,...rest}=tool;
+      return rest;
+    });
+    return rpcResult(message.id,{tools,...(modern?{ttlMs:0,cacheScope:"private"}:{})},modern);
+  }
+  if(message.method!=="tools/call")return rpcError(message.id,-32601,"Method not found",modern?404:200);
+  if(!validCall||!filter||message.params.requestState!==undefined||message.params.inputResponses!==undefined)
+    return rpcError(message.id,-32602,"Invalid trusted operation invocation");
+  const binding=Object.hasOwn(current.projected.bindings,message.params.name)?current.projected.bindings[message.params.name]:undefined;
+  if(!binding)return rpcError(message.id,-32602,"Tool is not in the currently authorized projection");
+  let operation;
+  try{operation=buildCoreOperation(binding,message.params.arguments);}
+  catch{return rpcError(message.id,-32602,"Invalid arguments for current Core operation");}
+  if(!operation.path.startsWith(base+"/"))return rpcError(message.id,-32602,"Selected Space mismatch");
+  return rpcResult(message.id,coreToolResult(await coreJson(env,token,operation.path,operation.method,operation.body,selector,config.resource)),modern);
+}
+
 export async function handleIdentityOAuthMcp(request, env) {
   const url = new URL(request.url);
   if (env?.MCP_RESOURCE_ORIGIN !== undefined) {
@@ -769,6 +845,8 @@ export async function handleIdentityOAuthMcp(request, env) {
   // requests the bounded envelope only chooses an authentication path;
   // protocol errors are returned only after authentication.
   const bearer=request.headers.get("authorization")||"";
+  if(/^Bearer lsp_agt_[A-Za-z0-9_-]+$/u.test(bearer)&&bearer.length<=MAX_TOKEN_LENGTH+7)
+    return handleTrustedMcp(request,config,env,bearer);
   if(!/^Bearer lsp_oat_[A-Za-z0-9_-]+$/u.test(bearer)||bearer.length>MAX_TOKEN_LENGTH+7)
     return authFailure(config,request);
   if(typeof env?.OAUTH_RESOURCE_SERVER_SECRET!=="string"||env.OAUTH_RESOURCE_SERVER_SECRET.length<32
@@ -872,6 +950,42 @@ export async function handleIdentityOAuthMcp(request, env) {
     || !message.params.arguments || typeof message.params.arguments !== "object"
     || Array.isArray(message.params.arguments)) {
     return rpcError(message.id, -32602, "Invalid tool invocation");
+  }
+  if(message.params.name==="lifespace.discover_user_delegation"){
+    if(!authorized.context.mayRequestDelegation)
+      return rpcError(message.id,-32602,"User Delegation is disabled for this OAuth grant");
+    const args=message.params.arguments;
+    if(message.params.requestState!==undefined||message.params.inputResponses!==undefined
+      ||Object.keys(args).some(k=>!["modelKey","operation"].includes(k))
+      ||(args.modelKey!==undefined&&(typeof args.modelKey!=="string"||!DELEGATION_MODEL.test(args.modelKey)))
+      ||(args.operation!==undefined&&(!args.modelKey||!delegatedOp(args.operation))))
+      return rpcError(message.id,-32602,"Invalid Delegation discovery filter");
+    const query=new URLSearchParams({mode:"delegation_request"});
+    if(args.modelKey!==undefined)query.set("modelKey",args.modelKey);
+    if(args.operation!==undefined)query.set("operation",args.operation);
+    const path="/api/v1/spaces/"+encodeURIComponent(authorized.context.spaceId)+"/_discovery/operations?"+query.toString();
+    const result=await coreJson(env,execution.token,path);
+    if(result.error)return rpcResult(message.id,coreToolResult(result),modern);
+    const data=result.payload?.data,rows=data?.eligibleOperations,seen=new Set();
+    // A legacy Core might ignore mode and return direct tool schemas.
+    // Never reinterpret or forward those as delegation eligibility.
+    if(!data||Object.keys(data).length!==1||!Array.isArray(rows)||rows.length>128
+      ||rows.some(row=>{
+        if(!row||typeof row!=="object"||Array.isArray(row)
+          ||Object.keys(row).sort().join(",")!=="modelKey,operation,requiredScopes"
+          ||typeof row.modelKey!=="string"||typeof row.operation!=="string"
+          ||!DELEGATION_MODEL.test(row.modelKey)||!delegatedOp(row.operation)
+          ||(args.modelKey&&row.modelKey!==args.modelKey)||(args.operation&&row.operation!==args.operation)
+          ||!Array.isArray(row.requiredScopes)||row.requiredScopes.length<1||row.requiredScopes.length>2
+          ||row.requiredScopes[0]!=="resources:read"||new Set(row.requiredScopes).size!==row.requiredScopes.length
+          ||row.requiredScopes.some(scope=>!["resources:read","resources:write"].includes(scope)||!authorized.context.scopes.includes(scope))
+          ||(["query","get","file_read"].includes(row.operation)&&row.requiredScopes.length!==1)
+          ||(["create","update","delete","file_upload"].includes(row.operation)&&row.requiredScopes.length!==2))return true;
+        const key=row.modelKey+":"+row.operation;
+        if(seen.has(key))return true;
+        seen.add(key);return false;
+      }))return rpcResult(message.id,coreToolResult({error:"CORE_OPERATION_CATALOG_INVALID"}),modern);
+    return rpcResult(message.id,coreToolResult({payload:{data:{eligibleOperations:rows}}}),modern);
   }
   if (message.params.name.startsWith("lifespace.") && [
       "lifespace.request_user_delegation", "lifespace.user_delegation_status",
