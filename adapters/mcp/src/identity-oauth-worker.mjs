@@ -256,8 +256,8 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
     [...catalogParams.keys()].every(k=>k==="modelKey"||k==="operation"||k==="mode")
     &&catalogParams.getAll("modelKey").length<=1&&catalogParams.getAll("operation").length<=1
     &&catalogParams.getAll("mode").length<=1
-    &&(catalogMode===null||catalogMode==="delegation_request")
-    &&(catalogMode==="delegation_request"||catalogModel!==null)
+    &&(catalogMode===null||catalogMode==="delegation_request"||(catalogMode==="configuration"&&Boolean(trustedResource)&&!delegationId))
+    &&(catalogMode==="delegation_request"||catalogMode==="configuration"||catalogModel!==null)
     &&(catalogModel===null||/^[a-z][a-z0-9_]{1,62}$/u.test(catalogModel))
     &&(catalogOperation===null||(catalogModel!==null&&/^(query|get|create|update|delete|file_read|file_upload|action:[a-z][a-z0-9_-]{0,62})$/u.test(catalogOperation))));
   const genericCatalog = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_discovery\/operations$/u.test(catalogUrl.pathname)
@@ -754,18 +754,19 @@ async function parseMcpEnvelope(request) {
   return checked.error?{error:checked.error}:{message,modern:checked.modern};
 }
 
-// Separate opaque Agent credential transport. No OAuth exchange, User ID,
-// trusted confirmation endpoint or direct fallback. Core owns all verification.
+// Opaque Agent credential transport. Omission of a selector means direct Agent
+// authority, not represented User authority. Invalid selectors never fall back.
+// No OAuth exchange, caller-supplied User ID or approval endpoint.
 async function handleTrustedMcp(request,config,env,bearer){
   const space=request.headers.get("x-lifespace-space-id"),selector=request.headers.get("x-lifespace-delegation-id");
-  if(!/^spc_[A-Za-z0-9_-]{1,128}$/u.test(space||"")||!/^dlg_[A-Za-z0-9_-]{1,128}$/u.test(selector||""))
-    return json({error:"Explicit Space and Delegation required"},403);
+  if(!/^spc_[A-Za-z0-9_-]{1,128}$/u.test(space||"")||(selector!==null&&!/^dlg_[A-Za-z0-9_-]{1,128}$/u.test(selector)))
+    return json({error:"Explicit Space and valid optional Delegation required"},403);
   if(typeof env?.CORE?.fetch!=="function")return json({error:"CORE_UNAVAILABLE"},503);
   const token=bearer.slice(7),base="/api/v1/spaces/"+encodeURIComponent(space);
   const envelope=await parseMcpEnvelope(request);
   // Authenticate every message including handshake, without exposing any
   // record or model schema to an invalid credential/selector. A targeted
-  // lookup keeps initialization bounded and does not consume a Delegation.
+  // lookup keeps initialization bounded; zero direct Grants are valid.
   const getProjection=async(filter)=>{
     const response=await coreJson(env,token,base+"/_discovery/operations"
       +(filter?"?"+new URLSearchParams(filter):""),"GET",undefined,selector,config.resource);
@@ -803,11 +804,41 @@ async function handleTrustedMcp(request,config,env,bearer){
       const {securitySchemes,_meta,...rest}=tool;
       return rest;
     });
+    if(selector===null)tools.push({name:"lifespace.discover_capabilities",title:"Discover configured LifeSpace capabilities",
+      description:"List configured model operation metadata bounded by this Agent credential, Application and MCP Server. This is not current User delegation eligibility or executable authority. No record data or operation schema is returned.",
+      annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+      inputSchema:{type:"object",additionalProperties:false,properties:{modelKey:{type:"string",pattern:"^[a-z][a-z0-9_]{1,62}$"},operation:delegatedOpSchema},dependentRequired:{operation:["modelKey"]}}});
     return rpcResult(message.id,{tools,...(modern?{ttlMs:0,cacheScope:"private"}:{})},modern);
   }
   if(message.method!=="tools/call")return rpcError(message.id,-32601,"Method not found",modern?404:200);
+  if(validCall&&selector===null&&message.params.name==="lifespace.discover_capabilities"){
+    const args=message.params.arguments;
+    if(message.params.requestState!==undefined||message.params.inputResponses!==undefined
+      ||Object.keys(args).some(k=>!["modelKey","operation"].includes(k))
+      ||(args.modelKey!==undefined&&(typeof args.modelKey!=="string"||!DELEGATION_MODEL.test(args.modelKey)))
+      ||(args.operation!==undefined&&(!args.modelKey||!delegatedOp(args.operation))))
+      return rpcError(message.id,-32602,"Invalid configuration discovery filter");
+    const query=new URLSearchParams({mode:"configuration"});
+    if(args.modelKey!==undefined)query.set("modelKey",args.modelKey);
+    if(args.operation!==undefined)query.set("operation",args.operation);
+    const result=await coreJson(env,token,base+"/_discovery/operations?"+query,"GET",undefined,null,config.resource);
+    if(result.error)return rpcResult(message.id,coreToolResult(result),modern);
+    const data=result.payload?.data,rows=data?.configuredOperations,seen=new Set();
+    // A legacy or malformed catalog must not become non-authorizing metadata.
+    if(!data||Object.keys(data).length!==1||!Array.isArray(rows)||rows.length>128||rows.some(row=>{
+      if(!row||typeof row!=="object"||Array.isArray(row)||Object.keys(row).sort().join(",")!=="modelKey,operation,requiredScopes"
+        ||typeof row.modelKey!=="string"||typeof row.operation!=="string"||!DELEGATION_MODEL.test(row.modelKey)||!delegatedOp(row.operation)
+        ||(args.modelKey&&row.modelKey!==args.modelKey)||(args.operation&&row.operation!==args.operation)
+        ||!Array.isArray(row.requiredScopes)||row.requiredScopes.length<1||row.requiredScopes.length>2
+        ||row.requiredScopes[0]!=="resources:read"||new Set(row.requiredScopes).size!==row.requiredScopes.length
+        ||row.requiredScopes.some(scope=>!["resources:read","resources:write"].includes(scope)))return true;
+      const key=row.modelKey+":"+row.operation;
+      if(seen.has(key))return true;seen.add(key);return false;
+    }))return rpcResult(message.id,coreToolResult({error:"CORE_CONFIGURATION_CATALOG_INVALID"}),modern);
+    return rpcResult(message.id,coreToolResult({payload:{data:{configuredOperations:rows}}}),modern);
+  }
   if(!validCall||!filter||message.params.requestState!==undefined||message.params.inputResponses!==undefined)
-    return rpcError(message.id,-32602,"Invalid trusted operation invocation");
+    return rpcError(message.id,-32602,"Invalid Agent operation invocation");
   const binding=Object.hasOwn(current.projected.bindings,message.params.name)?current.projected.bindings[message.params.name]:undefined;
   if(!binding)return rpcError(message.id,-32602,"Tool is not in the currently authorized projection");
   let operation;
