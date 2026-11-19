@@ -1,3 +1,7 @@
+## Native File upload / 原生附件上传（candidate）
+
+Core Generic Operations 0.5.0 adds `lifespace.file_upload.<modelKey>` as a write capability. Use data.phase=begin with fieldKey, optional recordId, name, contentType, size. The ordinary MCP result contains the existing upload session id and signed PUT URL, method and headers; the authorized client transfers bytes directly. Use data.phase=complete with uploadId to receive canonical File metadata. Link the File ID through a separately authorized create/update. No bytes, Base64, proxy, or extra limits in this Adapter. Both phases recheck Core authority; exact represented OAuth execution permits only timed or until-revoked Delegation, not once-only. Do not log or persist URLs; Core owns session expiry, staged-byte verification and promotion. Existing catalogs remain compatible. Native writable file/file_list only; External Provider and icon upload remain on existing REST surfaces. Enable only with compatible Core and Account/Console after Staging.
+
 ## Native File read / 原生附件读取（candidate）
 
 The adapter consumes Core Generic Operations 0.4.0 candidate `file_read` descriptors, requiring the exact Core-selected model operation and read Scope. The tool name is `lifespace.file_read.<modelKey>`; the existing explicit OAuth User Delegation tool can select the same exact operation. Core remains the sole authority for the linked record, current Grant and Delegation. Existing Server configurations are unchanged. Deploy the compatible Core and Adapter before enabling this option.
