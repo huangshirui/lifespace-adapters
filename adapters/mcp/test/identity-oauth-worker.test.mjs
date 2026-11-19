@@ -1320,16 +1320,12 @@ test("malformed or oversized protocol envelope retains authentication precedence
 });
 
 
-test("direct and represented file reads return content without exposing transfer credentials",async(t)=>{
+test("direct and represented file reads return the canonical descriptor without proxying bytes",async(t)=>{
   const fileId="fil_"+"a".repeat(32);
-  const bytes=new TextEncoder().encode("%PDF-1.7 synthetic attachment");
-  const url="https://"+"a".repeat(32)+".r2.cloudflarestorage.com/synthetic-bucket/files/spc_synthetic/"+fileId+"?X-Amz-Expires=300&X-Amz-Signature="+"b".repeat(64);
-  const fileReadDescriptor={id:fileId,contentType:"application/pdf",size:bytes.length,url,expiresAt:new Date(Date.now()+120000).toISOString()};
+  const url="https://files.example.com/synthetic-download?fixture=not-a-real-signature";
+  const fileReadDescriptor={id:fileId,name:"synthetic.pdf",contentType:"application/pdf",size:25*1024*1024,createdAt:"2026-01-01T00:00:00.000Z",url,expiresAt:new Date(Date.now()+120000).toISOString()};
   let transfers=0;
-  t.mock.method(globalThis,"fetch",async (target,init)=>{
-    transfers++;assert.equal(target,url);assert.equal(init.headers,undefined);
-    return new Response(bytes,{headers:{"content-type":"application/pdf"}});
-  });
+  t.mock.method(globalThis,"fetch",async()=>{transfers++;throw Error("Adapter must not fetch the file");});
   const f=connectedFixture({mcpOperations:["file_read"],fileReadDescriptor,mayDelegate:true});
   const listed=await handleIdentityOAuthMcp(rpc("tools/list"),f.env);
   assert.ok((await listed.json()).result.tools.some(tool=>tool.name==="lifespace.file_read.task"));
@@ -1339,18 +1335,21 @@ test("direct and represented file reads return content without exposing transfer
   for(const params of [direct,delegated]){
     const reply=await handleIdentityOAuthMcp(rpc("tools/call",{params}),f.env);
     assert.equal(reply.status,200);
+    assert.equal(reply.headers.get("cache-control"),"no-store");
     const result=(await reply.json()).result;
     assert.equal(result.isError,undefined);
-    assert.deepEqual(Buffer.from(result.content[1].resource.blob,"base64"),Buffer.from(bytes));
-    assert.ok(!JSON.stringify(result).includes("X-Amz"));
+    assert.deepEqual(result.structuredContent,fileReadDescriptor);
+    assert.deepEqual(result.content,[{type:"text",text:JSON.stringify(fileReadDescriptor)}]);
   }
-  assert.equal(transfers,2);
   const denied=connectedFixture({mcpOperations:["file_read"],fileReadDescriptor,mayDelegate:true,denied:true});
   for(const params of [direct,delegated]){
     const reply=await handleIdentityOAuthMcp(rpc("tools/call",{params}),denied.env);
     const result=(await reply.json()).result;
     assert.equal(result.isError,true);
-    assert.ok(!JSON.stringify(result).includes("X-Amz"));
+    assert.ok(!JSON.stringify(result).includes(url));
   }
-  assert.equal(transfers,2);
+  const old=connectedFixture({mcpOperations:["get"],fileReadDescriptor});
+  const stale=await handleIdentityOAuthMcp(rpc("tools/call",{params:direct}),old.env);
+  assert.ok((await stale.json()).error);
+  assert.equal(transfers,0);
 });
