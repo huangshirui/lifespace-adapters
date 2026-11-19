@@ -308,7 +308,7 @@ test("host-origin mismatch, CORS origin, query/path confusion and wrong transpor
 });
 
 
-function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", introspectionOverrides = {}, modelDetailStatus = 200, ignoreCatalogFilter = false, legacyIdentity = false, combinedContextOverrides = {}, combinedStatus = null, fileReadDescriptor = null, fileUploadDescriptor = null, fileUploadCompleted = null } = {}) {
+function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", introspectionOverrides = {}, modelDetailStatus = 200, ignoreCatalogFilter = false, legacyIdentity = false, combinedContextOverrides = {}, combinedStatus = null, fileReadDescriptor = null, fileUploadDescriptor = null, fileUploadCompleted = null, eligibilityResponse = null, zeroDirectCatalog = false } = {}) {
   const calls = [];
   let tokenActive = true;
   let currentApprovalStatus=approvalStatus;
@@ -446,7 +446,8 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
           return Response.json({error:"synthetic Core unavailability"},{status:discoveryStatus});
         const params=new URL(url).searchParams;
         const model=params.get("modelKey"),op=params.get("operation");
-        return Response.json({data:{operations:syntheticCatalog.filter(row=>
+        if(params.get("mode")==="delegation_request"&&eligibilityResponse!==null)return Response.json({data:eligibilityResponse});
+        return Response.json({data:{operations:(zeroDirectCatalog?[]:syntheticCatalog).filter(row=>
           ignoreCatalogFilter||((!model||row.modelKey===model)&&(!op||row.operation===op)))}});
       }
       const invocation = /^\/api\/v1\/spaces\/spc_synthetic\/_operations\/(op_[a-f0-9]{64})\/invoke$/u.exec(path);
@@ -971,6 +972,37 @@ test("Get-only Server lists only Native Get and executes exact record read", asy
     params: { name: "lifespace.query.task", arguments: { spaceId: "spc_synthetic" } },
   }), f.env);
   assert.equal((await forbidden.json()).error.code, -32602);
+});
+
+test("delegation eligibility is separate metadata and never creates direct tool bindings",async()=>{
+  const eligibleOperations=[{modelKey:"task",operation:"query",requiredScopes:["resources:read"]}];
+  const f=connectedFixture({mayDelegate:true,zeroDirectCatalog:true,eligibilityResponse:{eligibleOperations}});
+  const list=await handleIdentityOAuthMcp(rpc("tools/list"),f.env);
+  const tools=(await list.json()).result.tools;
+  assert.ok(tools.some(t=>t.name==="lifespace.discover_user_delegation"));
+  assert.ok(!tools.some(t=>t.name==="lifespace.query.task"));
+  const call=(fixture,args)=>handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.discover_user_delegation",arguments:args,
+  }}),fixture.env);
+  const preview=await call(f,{modelKey:"task",operation:"query"});
+  assert.deepEqual(JSON.parse((await preview.json()).result.content[0].text),{eligibleOperations});
+  const full=await call(f,{});
+  assert.deepEqual(JSON.parse((await full.json()).result.content[0].text),{eligibleOperations});
+  const bad=await call(f,{operation:"query"});
+  assert.equal((await bad.json()).error.code,-32602);
+  const direct=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.query.task",arguments:{spaceId:"spc_synthetic",data:{}},
+  }}),f.env);
+  assert.equal((await direct.json()).error.code,-32602);
+  const disabled=connectedFixture({mayDelegate:false});
+  assert.equal((await (await call(disabled,{})).json()).error.code,-32602);
+  // A legacy or malformed response cannot be interpreted as eligibility.
+  for(const response of [null,{eligibleOperations:[{...eligibleOperations[0],operationRef:"op_secret"}]},
+    {eligibleOperations:[{modelKey:"task",operation:"create",requiredScopes:["resources:read","resources:write"]}]}]){
+    const fixture=connectedFixture({mayDelegate:true,eligibilityResponse:response});
+    const result=(await (await call(fixture,{})).json()).result;
+    assert.equal(result.isError,true);
+  }
 });
 
 test("third-party OAuth may request LifeSpace Account URL, status and explicit represented execution", async () => {
