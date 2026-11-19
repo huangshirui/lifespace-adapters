@@ -308,7 +308,7 @@ test("host-origin mismatch, CORS origin, query/path confusion and wrong transpor
 });
 
 
-function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", introspectionOverrides = {}, modelDetailStatus = 200, ignoreCatalogFilter = false, legacyIdentity = false, combinedContextOverrides = {}, combinedStatus = null } = {}) {
+function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", introspectionOverrides = {}, modelDetailStatus = 200, ignoreCatalogFilter = false, legacyIdentity = false, combinedContextOverrides = {}, combinedStatus = null, fileReadDescriptor = null } = {}) {
   const calls = [];
   let tokenActive = true;
   let currentApprovalStatus=approvalStatus;
@@ -357,21 +357,21 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
   // The test transport knows only opaque operationRef; no Native/External/Person dispatch.
   const operations = Array.isArray(mcpOperations) ? mcpOperations
     : mutations ? ["query", "create", "update", "delete"] : ["query"];
-  const allowedOperations = operations.filter(op => ["query","get"].includes(op)
+  const allowedOperations = operations.filter(op => ["query","get","file_read"].includes(op)
     ? advertisedAccess.includes("read") : advertisedAccess.includes("write"));
   const syntheticCatalog = modelKeys.flatMap((key,index) => allowedOperations.map((op,j) => {
     const ref = "op_" + (index * 8 + j + 1).toString(16).padStart(64,"0");
     return {operationRef:ref,modelKey:key,display:"Task",operation:op,
       title:op+" Task",description:"Core current authorized operation",
-      requiredScopes:["query","get"].includes(op)?["resources:read"]:["resources:read","resources:write"],
+      requiredScopes:["query","get","file_read"].includes(op)?["resources:read"]:["resources:read","resources:write"],
       inputSchema:{type:"object",additionalProperties:false,
         properties:{spaceId:{type:"string",enum:[wrongSpace?"spc_other":"spc_synthetic"]},
-          ...(op==="get"||op==="update"||op==="delete"
+          ...(op==="get"||op==="update"||op==="delete"||op==="file_read"
             ?{recordId:{type:"string",minLength:1}}:{}),
           ...(op==="get"?{}:{data:op==="create"&&mutations
             ?{$ref:"#/$defs/Create"}:{type:"object"}})},
-        required:["spaceId",...(op==="get"||op==="update"||op==="delete"?["recordId"]:[]),
-          ...(op==="create"||op==="update"||op==="delete"?["data"]:[])],
+        required:["spaceId",...(op==="get"||op==="update"||op==="delete"||op==="file_read"?["recordId"]:[]),
+          ...(op==="create"||op==="update"||op==="delete"||op==="file_read"?["data"]:[])],
         ...(op==="create"&&mutations?{$defs:detail.data.mutations.$defs}:{})}};
   }));
   const operationByRef = new Map(syntheticCatalog.map(row => [row.operationRef,row.operation]));
@@ -415,10 +415,14 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
         assert.ok(v.modelKey==="person"
           ? ["query","get","create","update","delete"].includes(v.operation)
           : v.modelKey==="external_synthetic" ? v.operation==="update"
-          : ["create","action:complete"].includes(v.operation));
+          : ["create","action:complete","file_read"].includes(v.operation));
         assert.equal(typeof v.reason,"string");
         lastApprovalReason=v.reason.trim();
         return Response.json({data:{id:"arq_"+ "f".repeat(32),status:"pending",approvalUrl:"https://account.example.test/delegation?request_id=arq_"+ "f".repeat(32)}});
+      }
+      if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/models/task/records/rec_synthetic/file-downloads") {
+        assert.equal(init.headers["x-lifespace-delegation-id"],"dlg_synthetic");
+        return denied?Response.json({error:"private denial"},{status:403}):Response.json({data:fileReadDescriptor});
       }
       if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/oauth-delegation-requests/arq_"+"f".repeat(32)) {
         return Response.json({data:{
@@ -453,6 +457,7 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
             return Response.json({error:{code:"SYNTHETIC_PRIVATE_ERROR",message:"Do not expose upstream details"}},{status:queryStatus});
           return Response.json({data:{items:[{title:"Synthetic only"}]}});
         }
+        if (op === "file_read") return denied?Response.json({error:"private denial"},{status:403}):Response.json({data:fileReadDescriptor});
         if (op === "get") return Response.json({data:{id:"rec_synthetic",version:1}});
         const payload=requested.arguments?.data;
         if (["update","delete"].includes(op)&&(!Number.isSafeInteger(payload?.version)||payload.version<1))
@@ -1312,4 +1317,40 @@ test("malformed or oversized protocol envelope retains authentication precedence
   },body:"x".repeat(2*1024*1024)});
   assert.equal((await handleIdentityOAuthMcp(oversized,valid.env)).status,413);
   assert.deepEqual(valid.calls.map(x=>x.path),["/oauth/introspect"]);
+});
+
+
+test("direct and represented file reads return content without exposing transfer credentials",async(t)=>{
+  const fileId="fil_"+"a".repeat(32);
+  const bytes=new TextEncoder().encode("%PDF-1.7 synthetic attachment");
+  const url="https://"+"a".repeat(32)+".r2.cloudflarestorage.com/synthetic-bucket/files/spc_synthetic/"+fileId+"?X-Amz-Expires=300&X-Amz-Signature="+"b".repeat(64);
+  const fileReadDescriptor={id:fileId,contentType:"application/pdf",size:bytes.length,url,expiresAt:new Date(Date.now()+120000).toISOString()};
+  let transfers=0;
+  t.mock.method(globalThis,"fetch",async (target,init)=>{
+    transfers++;assert.equal(target,url);assert.equal(init.headers,undefined);
+    return new Response(bytes,{headers:{"content-type":"application/pdf"}});
+  });
+  const f=connectedFixture({mcpOperations:["file_read"],fileReadDescriptor,mayDelegate:true});
+  const listed=await handleIdentityOAuthMcp(rpc("tools/list"),f.env);
+  assert.ok((await listed.json()).result.tools.some(tool=>tool.name==="lifespace.file_read.task"));
+  const data={fieldKey:"attachment",fileId};
+  const direct={name:"lifespace.file_read.task",arguments:{spaceId:"spc_synthetic",recordId:"rec_synthetic",data}};
+  const delegated={name:"lifespace.execute_user_delegation",arguments:{delegationId:"dlg_synthetic",modelKey:"task",operation:"file_read",recordId:"rec_synthetic",data}};
+  for(const params of [direct,delegated]){
+    const reply=await handleIdentityOAuthMcp(rpc("tools/call",{params}),f.env);
+    assert.equal(reply.status,200);
+    const result=(await reply.json()).result;
+    assert.equal(result.isError,undefined);
+    assert.deepEqual(Buffer.from(result.content[1].resource.blob,"base64"),Buffer.from(bytes));
+    assert.ok(!JSON.stringify(result).includes("X-Amz"));
+  }
+  assert.equal(transfers,2);
+  const denied=connectedFixture({mcpOperations:["file_read"],fileReadDescriptor,mayDelegate:true,denied:true});
+  for(const params of [direct,delegated]){
+    const reply=await handleIdentityOAuthMcp(rpc("tools/call",{params}),denied.env);
+    const result=(await reply.json()).result;
+    assert.equal(result.isError,true);
+    assert.ok(!JSON.stringify(result).includes("X-Amz"));
+  }
+  assert.equal(transfers,2);
 });
