@@ -1,5 +1,4 @@
 import { projectCoreOperationCatalog, buildCoreOperation } from "./generic-operation-projection.mjs";
-import { fileReadResult } from "./file-read-content.mjs";
 
 // New Identity-owned OAuth MCP Resource Server. Not the retired Access
 // Managed OAuth Preview. This layer never exchanges CF Access assertions,
@@ -480,7 +479,7 @@ function userDelegationTools() {
     { name: "lifespace.execute_user_delegation",
       ...oauthToolSecurity(),
       title: "Execute Account-Approved LifeSpace User Delegation",
-      description: "Execute an exact Core model operation under a Delegation independently approved by the signed-in LifeSpace Account User. Account selects one-use, bounded time-limited repeat, or until-revoked lifetime; the Agent cannot choose or widen it. Native/Person and Provider-backed External operations stay restricted by current OAuth, User/Agent, Space, Model and policy authority; Core rejects revoked, expired, used, or cross-operation Delegations. External one-use write authority is consumed before the single Provider attempt, including on failure; repeated grants permit independently authorized attempts without exactly-once guarantees.",
+      description: "Execute an exact Core model operation under a Delegation independently approved by the signed-in LifeSpace Account User. Account selects one-use, bounded time-limited repeat, or until-revoked lifetime; the Agent cannot choose or widen it. Native/Person and Provider-backed External operations stay restricted by current OAuth, User/Agent, Space, Model and policy authority; Core rejects revoked, expired, used, or cross-operation Delegations. External one-use write authority is consumed before the single Provider attempt, including on failure; repeated grants permit independently authorized attempts without exactly-once guarantees. For file_read, Core returns a short-lived download URL for the authorized client to fetch directly. Treat it as a secret; do not persist or share it.",
       annotations:{readOnlyHint:false,destructiveHint:true,idempotentHint:false,openWorldHint:false},
       inputSchema:{type:"object",additionalProperties:false,required:["delegationId","modelKey","operation"],
         properties:{
@@ -947,7 +946,6 @@ export async function handleIdentityOAuthMcp(request, env) {
         url:pending.approvalUrl,modelKey:args.modelKey,operation:args.operation,
       },modern);
     }
-    if(delegation&&args.operation==="file_read")return rpcResult(message.id,await fileReadResult(outcome,space,args.data?.fileId),modern);
     return rpcResult(message.id,coreToolResult(outcome),modern);
   }
   const filter=toolSelector(message.params.name);
@@ -971,7 +969,6 @@ export async function handleIdentityOAuthMcp(request, env) {
     return rpcError(message.id, -32602, "Selected Space mismatch");
   }
   const result = await coreJson(env, execution.token, operation.path, operation.method, operation.body);
-  if(binding.fileRead)return rpcResult(message.id,await fileReadResult(result,authorized.context.spaceId,message.params.arguments.data?.fileId),modern);
   return rpcResult(message.id,coreToolResult(result),modern);
 }
 
