@@ -297,3 +297,14 @@ For a subsequent private Production Adapter deployment, prove the protected depl
 An opaque Agent API credential and the current configured Space/Server context authenticate a connection without a Delegation selector. The default operation catalog reflects direct Agent authority only; an Agent with zero Grants can initialize and use `lifespace.discover_capabilities`, whose result contains only Core-projected `configuredOperations` (modelKey, operation, requiredScopes). It is configuration metadata, not verified User-specific eligibility, a tool schema, or authority to execute. Core owns the application/model/credential/Server intersection; the Adapter only validates and transports the response. Unknown or older response shapes fail closed.
 
 An explicit Delegation header selects represented execution and must be valid; invalid, revoked, expired or malformed selectors never fall back to direct authority. No Agent confirmation endpoint is exposed. Independent user approval and User-bound eligibility remain separate work. OAuth behavior is unchanged. The matching Core projection must be available before enabling this candidate, and live client acceptance is pending.
+
+
+## Application-hosted OAuth Delegation approval (candidate, #66 / #629)
+
+A single OAuth MCP Agent can represent separately authorized Users through LifeSpace's current User/Agent/Application/Space/Authorization bindings. The Agent requests one exact operation via `lifespace.request_user_delegation`; Core chooses `approvalChannel` from the owning LifeSpace Application's platform policy, never from client arguments or Agent prompts.
+
+- `account` (default, including older compatible Core responses): Core returns a valid Account approval URL; modern URL Elicitation / MRTR may use it as before.
+- `application` (opted-in trusted backend): Core returns `pending`, `arq_*`, `approvalChannel` and **no** Account URL. The Adapter returns the structured result unchanged, including for URL-capable MCP clients; there is no URL elicitation and no confirmation tool. The trusted Application separately lists and confirms pending requests using its real signed User session, guarded against cross-user/application requests.
+- Once approved, `lifespace.user_delegation_status` and `lifespace.execute_user_delegation` retain the existing exact `dlg_*` selector, signed execution context and live authority checks. Expiry/revocation continue to fail closed.
+
+Unknown approval channels, missing request identity, or Application-channel responses carrying an Account URL are invalid. Core/Identity own channel policy and user confirmation; the Adapter only selects protocol UX. This is a candidate requiring paired upstream LifeSpace Identity 0.20.0 and Core OAuth Consent 0.5.0. Existing Account and trusted-workflow approval remain unchanged; no production deployment is claimed.

@@ -406,7 +406,8 @@ function stateBinding(auth,config,args,encoded) {
 }
 async function signApprovalState(env,auth,config,args,pending) {
   const approvalUrl=safeApprovalUrl(pending.approvalUrl,pending.id);
-  if(!REQUEST_ID.test(pending.id||"") || pending.status!=="pending" || !approvalUrl)
+  if((pending.approvalChannel??"account")!=="account"
+    || !REQUEST_ID.test(pending.id||"") || pending.status!=="pending" || !approvalUrl)
     return null;
   const exp=Math.min(Date.now()+600000,Date.parse(pending.expiresAt)||Date.now()+600000);
   if(exp<=Date.now())return null;
@@ -454,6 +455,7 @@ function delegationStatusMatches(payload,requestId,args,auth,config) {
     && payload.applicationId===c.applicationId && payload.agentId===c.agentId
     && payload.spaceId===c.spaceId && payload.clientId===c.clientId
     && payload.resource===config.resource
+    && (payload.approvalChannel===undefined||payload.approvalChannel==="account")
     && ["pending","approved","denied","expired"].includes(payload.status);
 }
 function oauthToolSecurity() {
@@ -476,7 +478,7 @@ function userDelegationTools() {
     { name: "lifespace.request_user_delegation",
       ...oauthToolSecurity(),
       title: "Request LifeSpace User Delegation",
-      description: "Ask the signed-in user to approve one specific Agent operation. Returns a LifeSpace Account confirmation URL; no authority is granted until approval.",
+      description: "Request independent User approval for one exact Agent operation. LifeSpace determines the approval channel: Account returns its confirmation URL; an opted-in trusted Application returns a pending request ID for its own verified User interface. No authority is granted until approval.",
       inputSchema: {type:"object",additionalProperties:false,required:["modelKey","operation","reason"],
         properties:{
           modelKey:{type:"string",pattern:"^[a-z][a-z0-9_]{1,62}$"},
@@ -1096,16 +1098,30 @@ export async function handleIdentityOAuthMcp(request, env) {
       : execution;
     if (coreToken.error) return json({error:coreToken.error},503);
     const outcome=await coreJson(env,coreToken.token,path,method,payload,delegation);
-    if(message.params.name==="lifespace.request_user_delegation" && !outcome.error
-      && urlElicitationCapable(message.params,modern)) {
+    if(message.params.name==="lifespace.request_user_delegation" && !outcome.error) {
       const pending=outcome.payload?.data;
-      let state;
-      try {state=await signApprovalState(env,authorized,config,args,pending);}
-      catch {return rpcError(message.id,-32603,"Unable to protect elicitation continuation");}
-      if(!state)return rpcError(message.id,-32603,"Invalid Core approval URL or pending request");
-      return approvalInputRequired(message.id,state,{
-        url:pending.approvalUrl,modelKey:args.modelKey,operation:args.operation,
-      },modern);
+      const channel=pending?.approvalChannel??"account"; // older Core used only Account.
+      if(!REQUEST_ID.test(pending?.id||"")||pending.status!=="pending"
+        || (channel!=="account"&&channel!=="application"))
+        return rpcError(message.id,-32603,"Invalid Core approval response");
+      if(channel==="application") {
+        // The Application's verified User UI discovers the pending arq_*.
+        // MCP never receives an approval URL or authority to confirm.
+        if(Object.hasOwn(pending,"approvalUrl"))
+          return rpcError(message.id,-32603,"Invalid Application approval response");
+        return rpcResult(message.id,coreToolResult(outcome),modern);
+      }
+      if(!safeApprovalUrl(pending.approvalUrl,pending.id))
+        return rpcError(message.id,-32603,"Invalid Core approval URL or pending request");
+      if(urlElicitationCapable(message.params,modern)) {
+        let state;
+        try {state=await signApprovalState(env,authorized,config,args,pending);}
+        catch {return rpcError(message.id,-32603,"Unable to protect elicitation continuation");}
+        if(!state)return rpcError(message.id,-32603,"Invalid Core approval URL or pending request");
+        return approvalInputRequired(message.id,state,{
+          url:pending.approvalUrl,modelKey:args.modelKey,operation:args.operation,
+        },modern);
+      }
     }
     return rpcResult(message.id,coreToolResult(outcome),modern);
   }

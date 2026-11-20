@@ -308,7 +308,7 @@ test("host-origin mismatch, CORS origin, query/path confusion and wrong transpor
 });
 
 
-function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", introspectionOverrides = {}, modelDetailStatus = 200, ignoreCatalogFilter = false, legacyIdentity = false, combinedContextOverrides = {}, combinedStatus = null, fileReadDescriptor = null, fileUploadDescriptor = null, fileUploadCompleted = null, eligibilityResponse = null, configurationResponse = null, zeroDirectCatalog = false, trustedAgent = false, trustedSelector = "dlg_synthetic" } = {}) {
+function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", approvalChannel = "account", invalidApplicationUrl = false, introspectionOverrides = {}, modelDetailStatus = 200, ignoreCatalogFilter = false, legacyIdentity = false, combinedContextOverrides = {}, combinedStatus = null, fileReadDescriptor = null, fileUploadDescriptor = null, fileUploadCompleted = null, eligibilityResponse = null, configurationResponse = null, zeroDirectCatalog = false, trustedAgent = false, trustedSelector = "dlg_synthetic" } = {}) {
   const calls = [];
   let tokenActive = true;
   let currentApprovalStatus=approvalStatus;
@@ -423,7 +423,8 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
           : ["create","action:complete","file_read","file_upload"].includes(v.operation));
         assert.equal(typeof v.reason,"string");
         lastApprovalReason=v.reason.trim();
-        return Response.json({data:{id:"arq_"+ "f".repeat(32),status:"pending",approvalUrl:"https://account.example.test/delegation?request_id=arq_"+ "f".repeat(32)}});
+        return Response.json({data:{id:"arq_"+ "f".repeat(32),status:"pending",approvalChannel,
+          ...(approvalChannel==="account"||invalidApplicationUrl?{approvalUrl:"https://account.example.test/delegation?request_id=arq_"+ "f".repeat(32)}:{})}});
       }
       if (mayDelegate && /^\/api\/v1\/spaces\/spc_synthetic\/models\/task\/file-uploads(?:\/upl_[a-f0-9]{32}\/complete)?$/u.test(path)) {
         assert.equal(init.headers["x-lifespace-delegation-id"],"dlg_synthetic");
@@ -437,7 +438,7 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       }
       if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/oauth-delegation-requests/arq_"+"f".repeat(32)) {
         return Response.json({data:{
-          id:"arq_"+"f".repeat(32),status:currentApprovalStatus,
+          id:"arq_"+"f".repeat(32),status:currentApprovalStatus,approvalChannel,
           ...(currentApprovalStatus==="approved"?{delegationId:"dlg_synthetic"}:{}),
           clientId:introspectionOverrides.client_id||active.client_id,
           applicationId:introspectionOverrides.application_id||active.application_id,
@@ -1181,6 +1182,50 @@ test("External Account-approved write passes current Provider payload without Na
     && c.path.endsWith("/records/rec_external_synthetic"));
   assert.equal(actual.length,1);
   assert.equal(actual[0].init.headers["x-lifespace-delegation-id"],"dlg_synthetic");
+});
+
+test("MCP application approval returns pending request without Account URL elicitation, even for a URL-capable client", async () => {
+  const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write",approvalChannel:"application",approvalStatus:"pending"});
+  const params={name:"lifespace.request_user_delegation",
+    arguments:{modelKey:"task",operation:"create",reason:"User approves within trusted Application"}};
+  const meta={"io.modelcontextprotocol/clientCapabilities":{elicitation:{url:{}}}};
+  for(const request of [modernRpc("tools/call",{params,meta}),rpc("tools/call",{params})]) {
+    const res=await handleIdentityOAuthMcp(request,f.env);
+    assert.equal(res.status,200);
+    const result=(await res.json()).result;
+    assert.notEqual(result.resultType,"input_required");
+    assert.equal(result.requestState,undefined);
+    const data=JSON.parse(result.content[0].text);
+    assert.equal(data.id,"arq_"+"f".repeat(32));
+    assert.equal(data.approvalChannel,"application");
+    assert.equal(data.approvalUrl,undefined);
+  }
+  const created=f.calls.filter(x=>x.service==="CORE"&&x.path.endsWith("/oauth-delegation-requests")
+    &&x.init.method==="POST");
+  assert.equal(created.length,2);
+  assert.equal(f.calls.some(x=>x.service==="CORE"&&x.path.includes("/approve")),false);
+  const checked=await handleIdentityOAuthMcp(rpc("tools/call",{params:{name:"lifespace.user_delegation_status",
+    arguments:{requestId:"arq_"+"f".repeat(32)}}}),f.env);
+  assert.equal(JSON.parse((await checked.json()).result.content[0].text).approvalChannel,"application");
+  f.setApprovalStatus("approved");
+  const approved=await handleIdentityOAuthMcp(rpc("tools/call",{params:{name:"lifespace.user_delegation_status",
+    arguments:{requestId:"arq_"+"f".repeat(32)}}}),f.env);
+  assert.equal(JSON.parse((await approved.json()).result.content[0].text).delegationId,"dlg_synthetic");
+  const deniedState=await handleIdentityOAuthMcp(modernRpc("tools/call",{
+    meta,params:{...params,requestState:"fabricated"},
+  }),f.env);
+  assert.equal((await deniedState.json()).error.code,-32602);
+});
+test("MCP rejects an Application approval response that attempts to supply an Account URL", async () => {
+  const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write",
+    approvalChannel:"application",invalidApplicationUrl:true});
+  const r=await handleIdentityOAuthMcp(modernRpc("tools/call",{
+    meta:{"io.modelcontextprotocol/clientCapabilities":{elicitation:{url:{}}}},
+    params:{name:"lifespace.request_user_delegation",arguments:{
+      modelKey:"task",operation:"create",reason:"Untrusted URL must not be used",
+    }},
+  }),f.env);
+  assert.equal((await r.json()).error.code,-32603);
 });
 
 test("MCP 2026 URL Elicitation MRTR resumes an Account-approved Delegation without a second request", async () => {
