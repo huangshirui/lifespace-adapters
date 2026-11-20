@@ -190,3 +190,8 @@ Development-only Agent Direct CRUD is gated by Staging + explicit read/write
 OAuth consent + Core's exact current model contract and authority preview.
 Production remains read-only; User Delegation is not implicitly enabled.
 Contract, argument and deployment details: [MCP adapter](mcp-adapter.md).
+
+
+## Application-owned OAuth confirmation channel (candidate)
+
+The reusable stable capability is already LifeSpace-owned: an `arq_*` records immutable User/Agent/Application/Space/Client/Resource request intent and `dlg_*` is the canonical live Delegation. Core adds a bounded, direct-User, application-scoped pending-request projection and preserves one atomic approval primitive; Identity supplies the platform-governed Application trust and current OAuth consent. These facts cannot safely live in MCP or ALOHA because they are authoritative for every client. The MCP Adapter changes only URL Elicitation packaging: Account channel may provide a verified URL, Application channel may provide a structured pending request but never an approval tool. ALOHA Run/UI association remains product-specific and outside this Adapter. Core 0.5.0 approval companion and Identity 0.20.0 private admission require independent CI and live staging acceptance; absent or unrecognized response semantics fail closed.
