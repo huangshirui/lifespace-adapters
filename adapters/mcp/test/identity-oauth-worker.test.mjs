@@ -452,7 +452,8 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
         const params=new URL(url).searchParams;
         if([...params.keys()].some(key=>key!=="modelKey"&&key!=="operation"))
           return Response.json({error:"unsupported filter"},{status:400});
-        const value=eligibilityResponse??{eligibleOperations:[]};
+        // A stale Core returning executable catalog shape must fail closed.
+        const value=eligibilityResponse??{operations:syntheticCatalog};
         return Response.json({data:value});
       }
       if (path === "/api/v1/spaces/spc_synthetic/_discovery/operations") {
