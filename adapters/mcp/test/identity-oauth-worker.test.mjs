@@ -446,6 +446,16 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
           resource:RESOURCE,modelKey:"task",operation:"create",reason:lastApprovalReason,
         }});
       }
+      if (path === "/api/v1/spaces/spc_synthetic/_authority/delegation-eligibility") {
+        assert.equal(init.method,"GET");
+        if(discoveryStatus!==200)return Response.json({error:"synthetic Core unavailability"},{status:discoveryStatus});
+        const params=new URL(url).searchParams;
+        if([...params.keys()].some(key=>key!=="modelKey"&&key!=="operation"))
+          return Response.json({error:"unsupported filter"},{status:400});
+        // A stale Core returning executable catalog shape must fail closed.
+        const value=eligibilityResponse??{operations:syntheticCatalog};
+        return Response.json({data:value});
+      }
       if (path === "/api/v1/spaces/spc_synthetic/_discovery/operations") {
         if (discoveryStatus !== 200)
           return Response.json({error:"synthetic Core unavailability"},{status:discoveryStatus});
@@ -1040,6 +1050,9 @@ test("delegation eligibility is separate metadata and never creates direct tool 
   }}),fixture.env);
   const preview=await call(f,{modelKey:"task",operation:"query"});
   assert.deepEqual(JSON.parse((await preview.json()).result.content[0].text),{eligibleOperations});
+  assert.ok(f.calls.some(x=>x.path==="/api/v1/spaces/spc_synthetic/_authority/delegation-eligibility"));
+  assert.equal(f.calls.some(x=>x.path.endsWith("/_discovery/operations")
+    &&x.init?.method==="GET"&&x.init?.headers?.["x-lifespace-delegation-id"]!==undefined),false);
   const full=await call(f,{});
   assert.deepEqual(JSON.parse((await full.json()).result.content[0].text),{eligibleOperations});
   const bad=await call(f,{operation:"query"});
