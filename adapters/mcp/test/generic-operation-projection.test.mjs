@@ -72,7 +72,28 @@ test("core operation projection is fail-closed for duplicate, cross-Space and fo
   assert.throws(()=>buildCoreOperation({...b,operationRef:"op_invalid"},{spaceId,data:{}}));
 });
 
-test("native file read projects only a Core-selected read capability",()=>{
+test("file transfer projection is identical for Native and External model origins",()=>{
+  // The Core operation catalog is authoritative. The Adapter must neither
+  // inspect nor derive model storage / Provider capability from origin hints.
+  const read={...operation("file_model","file_read",11),requiredScopes:["resources:read"]};
+  const upload=operation("file_model","file_upload",12);
+  const canonical={operations:[read,upload]};
+  const native={operations:canonical.operations.map(row=>({...row,origin:"native",storage:"r2"}))};
+  const external={operations:canonical.operations.map(row=>({...row,origin:"external",providerKey:"example-provider"}))};
+  const expected=projectCoreOperationCatalog(canonical,spaceId);
+  assert.deepEqual(projectCoreOperationCatalog(native,spaceId),expected);
+  assert.deepEqual(projectCoreOperationCatalog(external,spaceId),expected);
+  assert.deepEqual(expected.tools.map(x=>x.name),[
+    "lifespace.file_read.file_model","lifespace.file_upload.file_model",
+  ]);
+  for(const binding of Object.values(expected.bindings)){
+    assert.equal(Object.hasOwn(binding,"origin"),false);
+    assert.equal(Object.hasOwn(binding,"providerKey"),false);
+    assert.equal(Object.hasOwn(binding,"storage"),false);
+  }
+});
+
+test("file read projects only a Core-selected read capability",()=>{
   const row={...operation("synthetic_file","file_read",10),requiredScopes:["resources:read"]};
   const p=projectCoreOperationCatalog({operations:[row]},spaceId);
   assert.equal(p.tools[0].name,"lifespace.file_read.synthetic_file");
