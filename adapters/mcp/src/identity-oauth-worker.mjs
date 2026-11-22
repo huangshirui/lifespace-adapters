@@ -264,6 +264,17 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
     && method==="GET"&&validCatalogFilter&&!catalogUrl.hash;
   const genericCommand = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_operations\/op_[a-f0-9]{64}\/invoke$/u.test(path)
     && method==="POST";
+  // Canonical Core Authority eligibility, not MCP operation discovery.
+  const eligibilityUrl=new URL("https://core.internal"+path);
+  const eligibilityParams=eligibilityUrl.searchParams;
+  const eligibilityModel=eligibilityParams.get("modelKey"),eligibilityOperation=eligibilityParams.get("operation");
+  const eligibilityQueryValid=[...eligibilityParams.keys()].every(k=>k==="modelKey"||k==="operation")
+    &&eligibilityParams.getAll("modelKey").length<=1&&eligibilityParams.getAll("operation").length<=1
+    &&(eligibilityModel===null||DELEGATION_MODEL.test(eligibilityModel))
+    &&(eligibilityOperation===null||(eligibilityModel!==null&&delegatedOp(eligibilityOperation)));
+  const authorityEligibility=method==="GET"&&!delegationId
+    &&/^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_authority\/delegation-eligibility$/u.test(eligibilityUrl.pathname)
+    &&eligibilityQueryValid&&!eligibilityUrl.hash;
   // Person routes are a documented Kernel transport exception. The Agent
   // never chooses a trusted channel; this bridge is reachable only with a
   // signed represented User token and explicit Core Delegation selector.
@@ -282,7 +293,7 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
     && /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records\/rec_[A-Za-z0-9_-]+\/file-downloads$/u.test(path);
   const delegatedFileUpload=Boolean(delegationId)&&method==="POST"
     && /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/file-uploads(?:\/upl_[a-f0-9]{32}\/complete)?$/u.test(path);
-  if (!delegatedFileUpload && !delegatedFileRead && !genericCatalog && !genericCommand && !delegatedAction && !delegatedPerson && !oauthRequest && !recordGet && !mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
+  if (!delegatedFileUpload && !delegatedFileRead && !genericCatalog && !authorityEligibility && !genericCommand && !delegatedAction && !delegatedPerson && !oauthRequest && !recordGet && !mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
     return { error: "CORE_PATH_REJECTED" };
   }
   let response;
@@ -991,15 +1002,16 @@ export async function handleIdentityOAuthMcp(request, env) {
       ||(args.modelKey!==undefined&&(typeof args.modelKey!=="string"||!DELEGATION_MODEL.test(args.modelKey)))
       ||(args.operation!==undefined&&(!args.modelKey||!delegatedOp(args.operation))))
       return rpcError(message.id,-32602,"Invalid Delegation discovery filter");
-    const query=new URLSearchParams({mode:"delegation_request"});
+    const query=new URLSearchParams();
     if(args.modelKey!==undefined)query.set("modelKey",args.modelKey);
     if(args.operation!==undefined)query.set("operation",args.operation);
-    const path="/api/v1/spaces/"+encodeURIComponent(authorized.context.spaceId)+"/_discovery/operations?"+query.toString();
+    const path="/api/v1/spaces/"+encodeURIComponent(authorized.context.spaceId)
+      +"/_authority/delegation-eligibility"+(query.size?"?"+query.toString():"");
     const result=await coreJson(env,execution.token,path);
     if(result.error)return rpcResult(message.id,coreToolResult(result),modern);
     const data=result.payload?.data,rows=data?.eligibleOperations,seen=new Set();
-    // A legacy Core might ignore mode and return direct tool schemas.
-    // Never reinterpret or forward those as delegation eligibility.
+    // A misconfigured Core must never leak executable schema/tool
+    // metadata as user-approval eligibility. Fail closed on any shape drift.
     if(!data||Object.keys(data).length!==1||!Array.isArray(rows)||rows.length>128
       ||rows.some(row=>{
         if(!row||typeof row!=="object"||Array.isArray(row)
