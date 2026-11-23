@@ -313,6 +313,7 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
   let tokenActive = true;
   let currentApprovalStatus=approvalStatus;
   let lastApprovalReason="Synthetic one-time approval";
+  let lastApprovalOps=null;
   const signToken = ["eyJ" + "syntheticheader", "syntheticpayload", "syntheticsignature"].join(".");
   const schema = "a".repeat(64);
   const modelKeys = modelCount === 1 ? ["task"]
@@ -416,14 +417,20 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       if (denied && path.endsWith("/records/query")) return Response.json({ error: "forbidden" }, { status: 403 });
       if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/oauth-delegation-requests" && init.method === "POST") {
         const v = JSON.parse(init.body);
-        assert.ok(["task","person","external_synthetic"].includes(v.modelKey));
-        assert.ok(v.modelKey==="person"
-          ? ["query","get","create","update","delete"].includes(v.operation)
-          : v.modelKey==="external_synthetic" ? v.operation==="update"
-          : ["create","action:complete","file_read","file_upload"].includes(v.operation));
+        const operations=v.operations??[{modelKey:v.modelKey,operation:v.operation}];
+        assert.ok(Array.isArray(operations)&&operations.length>=1&&operations.length<=8);
+        for(const op of operations){
+          assert.ok(["task","person","external_synthetic"].includes(op.modelKey));
+          assert.ok(op.modelKey==="person"
+            ? ["query","get","create","update","delete"].includes(op.operation)
+            : op.modelKey==="external_synthetic" ? op.operation==="update"
+            : ["query","get","create","action:complete","file_read","file_upload"].includes(op.operation));
+        }
         assert.equal(typeof v.reason,"string");
         lastApprovalReason=v.reason.trim();
-        return Response.json({data:{id:"arq_"+ "f".repeat(32),status:"pending",approvalUrl:"https://account.example.test/delegation?request_id=arq_"+ "f".repeat(32)}});
+        lastApprovalOps=operations;
+        return Response.json({data:{id:"arq_"+ "f".repeat(32),status:"pending",approvalUrl:"https://account.example.test/delegation?request_id=arq_"+ "f".repeat(32),
+          ...(v.operations?{operations:v.operations}:{modelKey:v.modelKey,operation:v.operation})}});
       }
       if (mayDelegate && /^\/api\/v1\/spaces\/spc_synthetic\/models\/task\/file-uploads(?:\/upl_[a-f0-9]{32}\/complete)?$/u.test(path)) {
         assert.equal(init.headers["x-lifespace-delegation-id"],"dlg_synthetic");
@@ -443,7 +450,12 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
           applicationId:introspectionOverrides.application_id||active.application_id,
           agentId:introspectionOverrides.agent_id||active.agent_id,
           spaceId:introspectionOverrides.space_id||active.space_id,
-          resource:RESOURCE,modelKey:"task",operation:"create",reason:lastApprovalReason,
+          resource:RESOURCE,...(lastApprovalOps?.length>1?{
+            operations:lastApprovalOps.map(op=>({...op,
+              ...(currentApprovalStatus==="approved"?{delegationId:"dlg_synthetic"}:{})})),
+          }:{modelKey:lastApprovalOps?.[0]?.modelKey??"task",
+            operation:lastApprovalOps?.[0]?.operation??"create"}),
+          reason:lastApprovalReason,
         }});
       }
       if (path === "/api/v1/spaces/spc_synthetic/_authority/delegation-eligibility") {
@@ -1126,6 +1138,47 @@ test("third-party OAuth may request LifeSpace Account URL, status and explicit r
   // Only tools/list needs discovery; Delegation operations independently
   // resolve exact current Core authority without the direct Agent catalog.
   assert.equal(f.calls.filter(x=>x.path.endsWith("/_discovery/operations")).length,1);
+});
+
+test("composite OAuth Tool requests query/get/file_read once and retrieves separate approved selectors",async()=>{
+  const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read"});
+  const args={operations:[
+    {modelKey:"task",operation:"query"},
+    {modelKey:"task",operation:"get"},
+    {modelKey:"task",operation:"file_read"},
+  ],reason:"Browse and download a synthetic document"};
+  const list=await handleIdentityOAuthMcp(rpc("tools/list"),f.env);
+  const schema=(await list.json()).result.tools.find(x=>x.name==="lifespace.request_user_delegation").inputSchema;
+  assert.equal(schema.properties.operations.minItems,2);
+  assert.equal(schema.properties.operations.maxItems,8);
+  const result=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.request_user_delegation",arguments:args,
+  }}),f.env);
+  assert.equal(result.status,200);
+  const data=(await result.json()).result.structuredContent;
+  assert.deepEqual(data.operations,args.operations);
+  assert.ok(data.approvalUrl);
+  assert.equal(f.calls.filter(x=>x.path.endsWith("/oauth-delegation-requests")
+    &&x.init.method==="POST").length,1);
+  const status=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.user_delegation_status",arguments:{requestId:"arq_"+"f".repeat(32)},
+  }}),f.env);
+  const approved=(await status.json()).result.structuredContent;
+  assert.equal(approved.status,"approved");
+  assert.equal(approved.operations.length,3);
+  assert.ok(approved.operations.every(x=>x.delegationId==="dlg_synthetic"));
+  for(const rejected of [
+    {operations:[args.operations[0],args.operations[0]],reason:args.reason},
+    {operations:[args.operations[0]],reason:args.reason},
+    {operations:args.operations,modelKey:"task",reason:args.reason},
+  ]){
+    const invalid=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+      name:"lifespace.request_user_delegation",arguments:rejected,
+    }}),f.env);
+    assert.equal((await invalid.json()).error.code,-32602);
+  }
+  assert.equal(f.calls.filter(x=>x.path.endsWith("/oauth-delegation-requests")
+    &&x.init.method==="POST").length,1);
 });
 
 test("third-party Account-approved Person supports Kernel routes but never inherits Native record ids or authority", async()=>{
