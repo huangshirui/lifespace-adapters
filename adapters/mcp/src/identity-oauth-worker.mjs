@@ -638,7 +638,7 @@ function validOrigin(request, config) {
 // Legacy content stays unchanged, while successful Core results also expose
 // an MCP structuredContent object (compatible with both protocol eras).
 // No model-specific output schema is fabricated by this protocol adapter.
-function coreToolResult(outcome) {
+function coreToolResult(outcome, delegated = false) {
   if (outcome.error) {
     // Keep legacy text codes stable. Only caller-actionable generic guidance
     // is structured; untrusted Core error bodies and hidden identifiers never
@@ -652,7 +652,7 @@ function coreToolResult(outcome) {
       CORE_NOT_FOUND:"Recheck the supplied visible identifier and current authorization; resource existence is intentionally not disclosed.",
     }[outcome.error];
     return {isError:true,content:[{type:"text",text:outcome.error}],
-      ...(repair?{structuredContent:{code:outcome.error,repair}}:{})};
+      ...(delegated&&repair?{structuredContent:{code:outcome.error,repair}}:{})};
   }
   const value=outcome.payload?.data ?? outcome.payload ?? null;
   const structuredContent=value!==null && typeof value==="object"
@@ -1159,7 +1159,7 @@ export async function handleIdentityOAuthMcp(request, env) {
         url:pending.approvalUrl,...(composite?{operations:args.operations}:{modelKey:args.modelKey,operation:args.operation}),
       },modern);
     }
-    return rpcResult(message.id,coreToolResult(outcome),modern);
+    return rpcResult(message.id,coreToolResult(outcome,true),modern);
   }
   const filter=toolSelector(message.params.name);
   if(!filter)return rpcError(message.id,-32602,"Tool is not in the currently authorized projection");
