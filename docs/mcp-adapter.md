@@ -1,3 +1,24 @@
+## 2026-11-23 · Canonical model-field error projection / Model 字段错误反馈（P0 开发候选，未部署）
+
+The delegated `lifespace.execute_user_delegation` tool keeps the prior coarse error text and now optionally projects canonical LifeSpace Core Kernel 0.58.0 model-input error metadata into MCP `structuredContent`. Only an **authorized Create/Update** HTTP 400/422 response with Core `error.code` = `INVALID_RESOURCE` or `VALIDATION_ERROR`, and strictly validated `error.details: {fieldPath,reasonCode,repair}`, can produce a field path such as `data.category`. Core owns this error after current User/Application/Space/Model/Delegation and operation authorization; Adapter never guesses required fields, enums or validation outcomes.
+
+Example synthetic protocol result (the original text `INVALID_MUTATION_ARGUMENTS` stays unchanged):
+
+```json
+{
+  "isError": true,
+  "content": [{"type":"text","text":"INVALID_MUTATION_ARGUMENTS"}],
+  "structuredContent": {
+    "code":"INVALID_MUTATION_ARGUMENTS",
+    "fieldPath":"data.category",
+    "reasonCode":"FIELD_INVALID_ENUM",
+    "repair":"Use an allowed value from the current authorized Model Contract."
+  }
+}
+```
+
+Core `401/403/404`, Policy denials, hidden resources, Provider schema/write errors and arbitrary/unrecognized Core bodies **never** emit this metadata. Older Core versions without the optional diagnostics continue to return the prior generic repair guidance. This is **not** a complete dynamic per-model Create/Update Input Schema (tracked separately in LifeSpace #646/P1), an Agent-only validation engine, or a Production claim. Deploy Core before compatible Adapter; verify current-Grant, single/composite Delegation, field-invalid, stale/revoked and no-leak tests in Staging.
+
 ## 2026-11-23 · Delegated operation input schemas and repair-safe errors / 委托执行参数与错误修复（开发候选，未部署）
 
 The existing `lifespace.execute_user_delegation` tool remains backward compatible and publishes per-operation structural `oneOf` input branches. The selected `operation` controls required top-level `recordId` and `data` shape. File download (`file_read`) requires **all three**: top-level `recordId`, `data.fieldKey` and `data.fileId`. Missing caller-owned paths now return JSON-RPC `-32602` with stable `data.code`, `data.fieldPath` and `data.repair`; malformed calls never reach Core. Core 400/422 and 403/404 remain privacy-preserving categories; optional MCP `structuredContent` offers generic repair guidance **without forwarding raw Core error bodies or claiming a model-specific failing field**.

@@ -308,7 +308,7 @@ test("host-origin mismatch, CORS origin, query/path confusion and wrong transpor
 });
 
 
-function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", introspectionOverrides = {}, modelDetailStatus = 200, ignoreCatalogFilter = false, legacyIdentity = false, combinedContextOverrides = {}, combinedStatus = null, fileReadDescriptor = null, fileUploadDescriptor = null, fileUploadCompleted = null, eligibilityResponse = null, configurationResponse = null, zeroDirectCatalog = false, trustedAgent = false, trustedSelector = "dlg_synthetic" } = {}) {
+function connectedFixture({ denied = false, wrongSpace = false, invalidExchange = false, modelCount = 1, queryStatus = 200, discoveryStatus = 200, queryThrows = false, oauthScopes = "resources:read", advertisedAccess = ["read"], mutations = false, mutationStatus = 201, coreFieldError = null, environment = "test", mcpOperations = null, mayDelegate = false, approvalStatus = "approved", introspectionOverrides = {}, modelDetailStatus = 200, ignoreCatalogFilter = false, legacyIdentity = false, combinedContextOverrides = {}, combinedStatus = null, fileReadDescriptor = null, fileUploadDescriptor = null, fileUploadCompleted = null, eligibilityResponse = null, configurationResponse = null, zeroDirectCatalog = false, trustedAgent = false, trustedSelector = "dlg_synthetic" } = {}) {
   const calls = [];
   let tokenActive = true;
   let currentApprovalStatus=approvalStatus;
@@ -565,7 +565,7 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
         assert.equal(init.headers["x-lifespace-delegation-id"], "dlg_synthetic");
         return mutationStatus===201
           ?Response.json({data:{id:"rec_synthetic",version:1}})
-          :Response.json({error:{code:"SYNTHETIC_PRIVATE_VALIDATION",message:"do not forward"}},{status:mutationStatus});
+          :Response.json({error:coreFieldError??{code:"SYNTHETIC_PRIVATE_VALIDATION",message:"do not forward"}},{status:mutationStatus});
       }
       if (mutations && /\/records(?:\/rec_synthetic)?$/u.test(path)) {
         if (init.method === "DELETE" && mutationStatus === 201) return new Response(null, { status: 204 });
@@ -1541,6 +1541,51 @@ test("delegated file read reports missing data.fileId before Core and keeps hidd
   assert.equal(hidden.result.structuredContent.code,"CORE_PERMISSION_DENIED");
   assert.ok(!JSON.stringify(hidden).includes("private denial"));
   assert.ok(!JSON.stringify(hidden).includes("rec_synthetic"));
+});
+
+test("delegated Create exposes only validated Core-owned field diagnostics",async()=>{
+  const details={fieldPath:"data.category",reasonCode:"FIELD_INVALID_ENUM",
+    repair:"Use an allowed value from the current authorized Model Contract."};
+  const f=connectedFixture({
+    mayDelegate:true,oauthScopes:"resources:read resources:write",mutationStatus:400,
+    coreFieldError:{code:"INVALID_RESOURCE",message:"SECRET Core raw message",details},
+  });
+  const response=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.execute_user_delegation",arguments:{
+      delegationId:"dlg_synthetic",modelKey:"task",operation:"create",
+      data:{name:"synthetic",category:"invalid-value"},
+    },
+  }}),f.env);
+  const result=(await response.json()).result;
+  assert.equal(result.isError,true);
+  assert.equal(result.content[0].text,"INVALID_MUTATION_ARGUMENTS");
+  assert.deepEqual(result.structuredContent,{
+    code:"INVALID_MUTATION_ARGUMENTS",...details,
+  });
+  assert.ok(!JSON.stringify(result).includes("SECRET Core raw message"));
+  assert.ok(!JSON.stringify(result).includes("invalid-value"));
+});
+
+test("delegated model diagnostics fail closed when Core lacks safe detail or returns malformed field",async()=>{
+  const base={delegationId:"dlg_synthetic",modelKey:"task",operation:"create",data:{name:"synthetic"}};
+  for(const error of [
+    {code:"INVALID_RESOURCE",message:"SENSITIVE",details:{fieldPath:"spaceId",reasonCode:"FIELD_REQUIRED",repair:"Do not share"}},
+    {code:"INVALID_RESOURCE",message:"SENSITIVE",details:{fieldPath:"data.name",reasonCode:"UNKNOWN_PRIVATE",repair:"Do not share"}},
+    {code:"INVALID_RESOURCE",message:"SENSITIVE",details:{fieldPath:"data.name",reasonCode:"FIELD_REQUIRED",repair:"private-url https://internal.example.com"}},
+    {code:"SYNTHETIC_PROVIDER_ERROR",message:"SENSITIVE",details:{fieldPath:"data.name",reasonCode:"FIELD_REQUIRED",repair:"Do not share"}},
+  ]){
+    const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write",
+      mutationStatus:422,coreFieldError:error});
+    const response=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+      name:"lifespace.execute_user_delegation",arguments:base,
+    }}),f.env);
+    const result=(await response.json()).result;
+    assert.equal(result.isError,true);
+    assert.equal(result.content[0].text,"INVALID_MUTATION_ARGUMENTS");
+    assert.equal(result.structuredContent.fieldPath,undefined);
+    assert.ok(!JSON.stringify(result).includes("SENSITIVE"));
+    assert.ok(!JSON.stringify(result).includes("internal.example.com"));
+  }
 });
 
 test("Core mutation validation remains authoritative and provides non-leaking retry guidance",async()=>{
