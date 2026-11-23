@@ -1284,6 +1284,38 @@ test("MCP 2026 URL Elicitation MRTR resumes an Account-approved Delegation witho
   assert.equal(f.calls.filter(x=>x.service==="CORE"&&x.path.endsWith("/oauth-delegation-requests/arq_"+"f".repeat(32))).length,2);
 });
 
+test("composite URL elicitation resumes only after Account approves every exact operation",async()=>{
+  const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read",approvalStatus:"pending"});
+  const args={operations:[
+    {modelKey:"task",operation:"query"},
+    {modelKey:"task",operation:"get"},
+    {modelKey:"task",operation:"file_read"},
+  ],reason:"Read a synthetic attachment"};
+  const meta={"io.modelcontextprotocol/clientCapabilities":{elicitation:{url:{}}}};
+  const params={name:"lifespace.request_user_delegation",arguments:args};
+  const start=await handleIdentityOAuthMcp(modernRpc("tools/call",{meta,params}),f.env);
+  const pending=(await start.json()).result;
+  assert.equal(pending.resultType,"input_required");
+  assert.match(pending.inputRequests.lifespace_account_approval.params.message,/query.*get.*file_read/u);
+  const reply={...params,requestState:pending.requestState,
+    inputResponses:{lifespace_account_approval:{action:"accept"}}};
+  const before=await handleIdentityOAuthMcp(modernRpc("tools/call",{meta,params:reply}),f.env);
+  assert.equal((await before.json()).result.resultType,"input_required");
+  f.setApprovalStatus("approved");
+  const after=await handleIdentityOAuthMcp(modernRpc("tools/call",{meta,params:reply}),f.env);
+  const finished=(await after.json()).result;
+  assert.equal(finished.resultType,"complete");
+  const result=JSON.parse(finished.content[0].text);
+  assert.deepEqual(result.operations.map(op=>op.operation),["query","get","file_read"]);
+  assert.ok(result.operations.every(op=>op.delegationId==="dlg_synthetic"));
+  const tampered=await handleIdentityOAuthMcp(modernRpc("tools/call",{meta,params:{
+    ...reply,arguments:{...args,operations:[...args.operations].reverse()},
+  }}),f.env);
+  assert.equal((await tampered.json()).error.code,-32602);
+  assert.equal(f.calls.filter(x=>x.path.endsWith("/oauth-delegation-requests")
+    &&x.init.method==="POST").length,1);
+});
+
 test("MCP MRTR refuses tampered, cross-context and declined URL-approval continuation", async () => {
   const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write"});
   const meta={"io.modelcontextprotocol/clientCapabilities":{elicitation:{url:{}}}};
