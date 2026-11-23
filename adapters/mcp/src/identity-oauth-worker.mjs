@@ -1101,7 +1101,9 @@ export async function handleIdentityOAuthMcp(request, env) {
         if(!delegationStatusMatches(result,pending.id,args,authorized,config))
           return rpcError(message.id,-32602,"Delegation status context mismatch");
         if(result.status==="approved") {
-          if(!DELEGATION_ID.test(result.delegationId||""))
+          if(Array.isArray(args.operations)
+            ? result.operations.some(op=>!DELEGATION_ID.test(op.delegationId||""))
+            : !DELEGATION_ID.test(result.delegationId||""))
             return rpcError(message.id,-32602,"Approved Delegation ID unavailable");
           return rpcResult(message.id,{content:[{type:"text",text:JSON.stringify(result)}]},modern);
         }
