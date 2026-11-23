@@ -1,3 +1,26 @@
+## 2026-11-23 · Delegated operation input schemas and repair-safe errors / 委托执行参数与错误修复（开发候选，未部署）
+
+The existing `lifespace.execute_user_delegation` tool remains backward compatible and publishes per-operation structural `oneOf` input branches. The selected `operation` controls required top-level `recordId` and `data` shape. File download (`file_read`) requires **all three**: top-level `recordId`, `data.fieldKey` and `data.fileId`. Missing caller-owned paths now return JSON-RPC `-32602` with stable `data.code`, `data.fieldPath` and `data.repair`; malformed calls never reach Core. Core 400/422 and 403/404 remain privacy-preserving categories; optional MCP `structuredContent` offers generic repair guidance **without forwarding raw Core error bodies or claiming a model-specific failing field**.
+
+Example (synthetic identifiers only, not a reusable grant):
+
+```json
+{
+  "delegationId": "dlg_synthetic",
+  "modelKey": "task",
+  "operation": "file_read",
+  "recordId": "rec_synthetic",
+  "data": {
+    "fieldKey": "attachment",
+    "fileId": "fil_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}
+```
+
+Upload `begin` uses `data.phase="begin"`, `data.fieldKey`, `data.name`, `data.contentType` and `data.size` (optionally `data.recordId`); `complete` requires `data.phase="complete"` and `data.uploadId`. Neither phase accepts top-level `recordId`. After successful `complete`, retain the returned **`fil_*`**; if subsequent Create/Update fails, correct the record payload and reference the same File ID instead of uploading the same bytes again. This describes an existing Native File capability, **not** a new orphan-file lookup, retention, or cleanup guarantee. Core owns File state and deferred lifecycle work (LifeSpace #645).
+
+**Canonical model field names, required fields, enum values and relationship rules are not invented by the Adapter.** They remain in LifeSpace's published Model Contract. The new static tool schema validates the protocol envelope, not every model's complete record payload. A safe, authorized model-contract retrieval or Core-owned field-path diagnostics would be required for richer per-model guidance. Existing OAuth scope/Delegation checks and single-operation or combined approval behavior are unchanged. This patch is not a Production claim.
+
 ## 2026-11-23 · One approval for multiple exact operations / 组合授权（Staging candidate）
 
 The established `lifespace.request_user_delegation` tool keeps its legacy single-operation `modelKey + operation + reason` form and additionally accepts `operations:[{modelKey,operation}, ...]` (2–8 unique entries) with one shared reason. The Adapter passes only these exact selectors to the canonical LifeSpace Core OAuth Agent authorization-request API; **Core** validates each current Resource/Server, Space, OAuth Scope, Model and Provider authority, writes one `arq_*` with multiple ordered items, and Account User explicitly approves or denies the set in one UI interaction. Approval atomically issues a **different `dlg_*` per operation**; the ordinary `lifespace.user_delegation_status` result exposes an `operations` array with corresponding `delegationId` on approval. Each `lifespace.execute_user_delegation` call still selects one exact `dlg_*` and Core independently restricts Model, operation, Space and revocation. Upload within the set requires a timed or until-revoked lifetime for the whole approval; legacy one-operation flows remain unchanged. URL Elicitation/MRTR binds the signed full operation list, and an echoed browser acceptance cannot bypass Account approval. **No Adapter-owned batch permission, stored grant, or generic access escalation**. This is not a claim of Production capability.
