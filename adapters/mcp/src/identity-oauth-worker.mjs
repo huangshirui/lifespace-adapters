@@ -674,9 +674,16 @@ function coreToolResult(outcome, delegated = false) {
       CORE_PERMISSION_DENIED:"Recheck current authorization and Delegation status, including expiry or revocation; do not infer whether a hidden resource exists.",
       CORE_NOT_FOUND:"Recheck the supplied visible identifier and current authorization; resource existence is intentionally not disclosed.",
     }[outcome.error];
-    return {isError:true,content:[{type:"text",text:outcome.error}],
+    // Some MCP clients surface only the first text item for isError tools.
+    // Mirror strictly verified Core diagnostics into that legacy text as a
+    // compatibility fallback. Never include raw Core messages or user values.
+    const field=delegated&&repair&&outcome.fieldProblem?outcome.fieldProblem:null;
+    const visibleText=field
+      ? outcome.error+" at "+field.fieldPath+" ("+field.reasonCode+"): "+field.repair
+      : outcome.error;
+    return {isError:true,content:[{type:"text",text:visibleText}],
       ...(delegated&&repair?{structuredContent:{code:outcome.error,
-        ...(outcome.fieldProblem??{}),repair:outcome.fieldProblem?.repair??repair}}:{})};
+        ...(field??{}),repair:field?.repair??repair}}:{})};
   }
   const value=outcome.payload?.data ?? outcome.payload ?? null;
   const structuredContent=value!==null && typeof value==="object"
