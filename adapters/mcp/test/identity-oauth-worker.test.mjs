@@ -313,6 +313,7 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
   let tokenActive = true;
   let currentApprovalStatus=approvalStatus;
   let lastApprovalReason="Synthetic one-time approval";
+  let lastApprovalOps=null;
   const signToken = ["eyJ" + "syntheticheader", "syntheticpayload", "syntheticsignature"].join(".");
   const schema = "a".repeat(64);
   const modelKeys = modelCount === 1 ? ["task"]
@@ -416,14 +417,20 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       if (denied && path.endsWith("/records/query")) return Response.json({ error: "forbidden" }, { status: 403 });
       if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/oauth-delegation-requests" && init.method === "POST") {
         const v = JSON.parse(init.body);
-        assert.ok(["task","person","external_synthetic"].includes(v.modelKey));
-        assert.ok(v.modelKey==="person"
-          ? ["query","get","create","update","delete"].includes(v.operation)
-          : v.modelKey==="external_synthetic" ? v.operation==="update"
-          : ["create","action:complete","file_read","file_upload"].includes(v.operation));
+        const operations=v.operations??[{modelKey:v.modelKey,operation:v.operation}];
+        assert.ok(Array.isArray(operations)&&operations.length>=1&&operations.length<=8);
+        for(const op of operations){
+          assert.ok(["task","person","external_synthetic"].includes(op.modelKey));
+          assert.ok(op.modelKey==="person"
+            ? ["query","get","create","update","delete"].includes(op.operation)
+            : op.modelKey==="external_synthetic" ? op.operation==="update"
+            : ["query","get","create","action:complete","file_read","file_upload"].includes(op.operation));
+        }
         assert.equal(typeof v.reason,"string");
         lastApprovalReason=v.reason.trim();
-        return Response.json({data:{id:"arq_"+ "f".repeat(32),status:"pending",approvalUrl:"https://account.example.test/delegation?request_id=arq_"+ "f".repeat(32)}});
+        lastApprovalOps=operations;
+        return Response.json({data:{id:"arq_"+ "f".repeat(32),status:"pending",approvalUrl:"https://account.example.test/delegation?request_id=arq_"+ "f".repeat(32),
+          ...(v.operations?{operations:v.operations}:{modelKey:v.modelKey,operation:v.operation})}});
       }
       if (mayDelegate && /^\/api\/v1\/spaces\/spc_synthetic\/models\/task\/file-uploads(?:\/upl_[a-f0-9]{32}\/complete)?$/u.test(path)) {
         assert.equal(init.headers["x-lifespace-delegation-id"],"dlg_synthetic");
@@ -443,7 +450,12 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
           applicationId:introspectionOverrides.application_id||active.application_id,
           agentId:introspectionOverrides.agent_id||active.agent_id,
           spaceId:introspectionOverrides.space_id||active.space_id,
-          resource:RESOURCE,modelKey:"task",operation:"create",reason:lastApprovalReason,
+          resource:RESOURCE,...(lastApprovalOps?.length>1?{
+            operations:lastApprovalOps.map(op=>({...op,
+              ...(currentApprovalStatus==="approved"?{delegationId:"dlg_synthetic"}:{})})),
+          }:{modelKey:lastApprovalOps?.[0]?.modelKey??"task",
+            operation:lastApprovalOps?.[0]?.operation??"create"}),
+          reason:lastApprovalReason,
         }});
       }
       if (path === "/api/v1/spaces/spc_synthetic/_authority/delegation-eligibility") {
@@ -1128,6 +1140,47 @@ test("third-party OAuth may request LifeSpace Account URL, status and explicit r
   assert.equal(f.calls.filter(x=>x.path.endsWith("/_discovery/operations")).length,1);
 });
 
+test("composite OAuth Tool requests query/get/file_read once and retrieves separate approved selectors",async()=>{
+  const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read"});
+  const args={operations:[
+    {modelKey:"task",operation:"query"},
+    {modelKey:"task",operation:"get"},
+    {modelKey:"task",operation:"file_read"},
+  ],reason:"Browse and download a synthetic document"};
+  const list=await handleIdentityOAuthMcp(rpc("tools/list"),f.env);
+  const schema=(await list.json()).result.tools.find(x=>x.name==="lifespace.request_user_delegation").inputSchema;
+  assert.equal(schema.properties.operations.minItems,2);
+  assert.equal(schema.properties.operations.maxItems,8);
+  const result=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.request_user_delegation",arguments:args,
+  }}),f.env);
+  assert.equal(result.status,200);
+  const data=(await result.json()).result.structuredContent;
+  assert.deepEqual(data.operations,args.operations);
+  assert.ok(data.approvalUrl);
+  assert.equal(f.calls.filter(x=>x.path.endsWith("/oauth-delegation-requests")
+    &&x.init.method==="POST").length,1);
+  const status=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.user_delegation_status",arguments:{requestId:"arq_"+"f".repeat(32)},
+  }}),f.env);
+  const approved=(await status.json()).result.structuredContent;
+  assert.equal(approved.status,"approved");
+  assert.equal(approved.operations.length,3);
+  assert.ok(approved.operations.every(x=>x.delegationId==="dlg_synthetic"));
+  for(const rejected of [
+    {operations:[args.operations[0],args.operations[0]],reason:args.reason},
+    {operations:[args.operations[0]],reason:args.reason},
+    {operations:args.operations,modelKey:"task",reason:args.reason},
+  ]){
+    const invalid=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
+      name:"lifespace.request_user_delegation",arguments:rejected,
+    }}),f.env);
+    assert.equal((await invalid.json()).error.code,-32602);
+  }
+  assert.equal(f.calls.filter(x=>x.path.endsWith("/oauth-delegation-requests")
+    &&x.init.method==="POST").length,1);
+});
+
 test("third-party Account-approved Person supports Kernel routes but never inherits Native record ids or authority", async()=>{
   const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write"});
   async function call(name,args){
@@ -1229,6 +1282,38 @@ test("MCP 2026 URL Elicitation MRTR resumes an Account-approved Delegation witho
   // Elicitation acknowledges Account approval; it never executes a mutation
   // or invents a Delegation, even when client echoes an 'accept' result.
   assert.equal(f.calls.filter(x=>x.service==="CORE"&&x.path.endsWith("/oauth-delegation-requests/arq_"+"f".repeat(32))).length,2);
+});
+
+test("composite URL elicitation resumes only after Account approves every exact operation",async()=>{
+  const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read",approvalStatus:"pending"});
+  const args={operations:[
+    {modelKey:"task",operation:"query"},
+    {modelKey:"task",operation:"get"},
+    {modelKey:"task",operation:"file_read"},
+  ],reason:"Read a synthetic attachment"};
+  const meta={"io.modelcontextprotocol/clientCapabilities":{elicitation:{url:{}}}};
+  const params={name:"lifespace.request_user_delegation",arguments:args};
+  const start=await handleIdentityOAuthMcp(modernRpc("tools/call",{meta,params}),f.env);
+  const pending=(await start.json()).result;
+  assert.equal(pending.resultType,"input_required");
+  assert.match(pending.inputRequests.lifespace_account_approval.params.message,/query.*get.*file_read/u);
+  const reply={...params,requestState:pending.requestState,
+    inputResponses:{lifespace_account_approval:{action:"accept"}}};
+  const before=await handleIdentityOAuthMcp(modernRpc("tools/call",{meta,params:reply}),f.env);
+  assert.equal((await before.json()).result.resultType,"input_required");
+  f.setApprovalStatus("approved");
+  const after=await handleIdentityOAuthMcp(modernRpc("tools/call",{meta,params:reply}),f.env);
+  const finished=(await after.json()).result;
+  assert.equal(finished.resultType,"complete");
+  const result=JSON.parse(finished.content[0].text);
+  assert.deepEqual(result.operations.map(op=>op.operation),["query","get","file_read"]);
+  assert.ok(result.operations.every(op=>op.delegationId==="dlg_synthetic"));
+  const tampered=await handleIdentityOAuthMcp(modernRpc("tools/call",{meta,params:{
+    ...reply,arguments:{...args,operations:[...args.operations].reverse()},
+  }}),f.env);
+  assert.equal((await tampered.json()).error.code,-32602);
+  assert.equal(f.calls.filter(x=>x.path.endsWith("/oauth-delegation-requests")
+    &&x.init.method==="POST").length,1);
 });
 
 test("MCP MRTR refuses tampered, cross-context and declined URL-approval continuation", async () => {
