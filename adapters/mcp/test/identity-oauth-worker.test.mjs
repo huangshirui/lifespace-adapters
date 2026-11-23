@@ -1558,7 +1558,9 @@ test("delegated Create exposes only validated Core-owned field diagnostics",asyn
   }}),f.env);
   const result=(await response.json()).result;
   assert.equal(result.isError,true);
-  assert.equal(result.content[0].text,"INVALID_MUTATION_ARGUMENTS");
+  assert.equal(result.content[0].text,
+    "INVALID_MUTATION_ARGUMENTS at data.category (FIELD_INVALID_ENUM): "
+      +"Use an allowed value from the current authorized Model Contract.");
   assert.deepEqual(result.structuredContent,{
     code:"INVALID_MUTATION_ARGUMENTS",...details,
   });
