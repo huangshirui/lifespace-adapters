@@ -563,7 +563,9 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       }
       if (mayDelegate && init.method === "POST" && path === "/api/v1/spaces/spc_synthetic/models/task/records") {
         assert.equal(init.headers["x-lifespace-delegation-id"], "dlg_synthetic");
-        return Response.json({data:{id:"rec_synthetic",version:1}});
+        return mutationStatus===201
+          ?Response.json({data:{id:"rec_synthetic",version:1}})
+          :Response.json({error:{code:"SYNTHETIC_PRIVATE_VALIDATION",message:"do not forward"}},{status:mutationStatus});
       }
       if (mutations && /\/records(?:\/rec_synthetic)?$/u.test(path)) {
         if (init.method === "DELETE" && mutationStatus === 201) return new Response(null, { status: 204 });
@@ -1531,7 +1533,7 @@ test("delegated file read reports missing data.fileId before Core and keeps hidd
   assert.equal(missing.error.code,-32602);
   assert.equal(missing.error.data.code,"MISSING_DELEGATION_ARGUMENT");
   assert.equal(missing.error.data.fieldPath,"data.fileId");
-  assert.match(missing.error.message,/data\\.fileId/u);
+  assert.ok(missing.error.message.includes("data.fileId"));
   assert.equal(f.calls.some(x=>x.service==="CORE"&&x.path.endsWith("/file-downloads")),false);
   const denied=connectedFixture({mayDelegate:true,denied:true});
   const hidden=await invoke({...base,data:{fieldKey:"attachment",fileId}},denied);
