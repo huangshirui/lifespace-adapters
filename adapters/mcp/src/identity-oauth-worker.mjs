@@ -1055,9 +1055,9 @@ export async function handleIdentityOAuthMcp(request, env) {
       return rpcError(message.id,-32602,"Elicitation state is not accepted by this Tool");
     const args=message.params.arguments;
     const space=authorized.context.spaceId;
+    const composite=message.params.name==="lifespace.request_user_delegation" && Array.isArray(args.operations);
     let path,method="GET",payload,delegation=null;
     if (message.params.name==="lifespace.request_user_delegation") {
-      const composite=Array.isArray(args.operations);
       const requested=composite?args.operations:[{modelKey:args.modelKey,operation:args.operation}];
       if (Object.keys(args).some(k=>!["modelKey","operation","operations","reason"].includes(k))
         || typeof args.reason!=="string" || args.reason.trim().length<4 || args.reason.trim().length>250
