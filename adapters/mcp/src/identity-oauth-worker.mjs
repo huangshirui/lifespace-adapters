@@ -446,6 +446,8 @@ async function verifyApprovalState(env,auth,config,args,state) {
   return payload;
 }
 function approvalInputRequired(id,state,pending,modern) {
+  const detail=pending.operations?.map(op=>op.modelKey+" · "+op.operation).join("、")
+    ??pending.modelKey+" · "+pending.operation;
   return rpcResult(id,{
     resultType:"input_required",
     requestState:state,
@@ -453,15 +455,22 @@ function approvalInputRequired(id,state,pending,modern) {
       [ELICITATION_KEY]:{
         method:"elicitation/create",
         params:{mode:"url",url:pending.url,
-          message:"在 LifeSpace Account 网页确认 "+pending.modelKey+" · "+pending.operation+" 的用户委托。确认后客户端可重新提交原工具调用；网页同意不直接授予权限。"},
+          message:"在 LifeSpace Account 网页确认 "+detail+" 的用户委托。确认后客户端可重新提交原工具调用；网页同意不直接授予权限。"},
       },
     },
   },modern);
 }
 function delegationStatusMatches(payload,requestId,args,auth,config) {
   const c=auth.context;
-  return payload?.id===requestId && payload.modelKey===args.modelKey
-    && payload.operation===args.operation && payload.reason===args.reason.trim()
+  const exact=Array.isArray(args.operations)
+    ? Array.isArray(payload?.operations) && payload.operations.length===args.operations.length
+      && payload.operations.every((op,i)=>op.modelKey===args.operations[i]?.modelKey
+        && op.operation===args.operations[i]?.operation
+        && (!Object.hasOwn(op,"delegationId")||DELEGATION_ID.test(op.delegationId)))
+      && payload.modelKey===undefined && payload.operation===undefined
+    : payload?.modelKey===args.modelKey && payload.operation===args.operation
+      && payload.operations===undefined;
+  return payload?.id===requestId && exact && payload.reason===args.reason.trim()
     && payload.applicationId===c.applicationId && payload.agentId===c.agentId
     && payload.spaceId===c.spaceId && payload.clientId===c.clientId
     && payload.resource===config.resource
@@ -487,18 +496,24 @@ function userDelegationTools() {
     { name: "lifespace.request_user_delegation",
       ...oauthToolSecurity(),
       title: "Request LifeSpace User Delegation",
-      description: "Ask the signed-in user to approve one specific Agent operation. Returns a LifeSpace Account confirmation URL; no authority is granted until approval.",
-      inputSchema: {type:"object",additionalProperties:false,required:["modelKey","operation","reason"],
+      description: "Ask the signed-in user to approve either one Agent operation or a bounded set of 2-8 operations in one LifeSpace Account confirmation. Every operation gets a separate exact Delegation ID; a single approval never broadens an individual operation. Do not request each operation separately if one task needs a combined authorization. No authority until explicit approval.",
+      inputSchema: {type:"object",additionalProperties:false,required:["reason"],
         properties:{
           modelKey:{type:"string",pattern:"^[a-z][a-z0-9_]{1,62}$"},
           operation:delegatedOpSchema,
+          operations:{type:"array",minItems:2,maxItems:8,items:{type:"object",
+            additionalProperties:false,required:["modelKey","operation"],properties:{
+              modelKey:{type:"string",pattern:"^[a-z][a-z0-9_]{1,62}$"},
+              operation:delegatedOpSchema,
+            }}},
           reason:{type:"string",minLength:4,maxLength:250},
-        }},
+        },
+        oneOf:[{required:["modelKey","operation"]},{required:["operations"]}]},
     },
     { name: "lifespace.user_delegation_status",
       ...oauthToolSecurity(),
       title: "Check LifeSpace Delegation Approval",
-      description: "Check the current status of an explicit User Delegation request, then retrieve the Core-issued delegationId when approved.",
+      description: "Check a pending or decided User Delegation request. A single-operation request returns delegationId; a combined request returns operations with one separately bound delegationId for each approved operation.",
       inputSchema:{type:"object",additionalProperties:false,required:["requestId"],
         properties:{requestId:{type:"string",pattern:"^arq_[a-f0-9]{32}$"}}},
     },
@@ -1042,11 +1057,19 @@ export async function handleIdentityOAuthMcp(request, env) {
     const space=authorized.context.spaceId;
     let path,method="GET",payload,delegation=null;
     if (message.params.name==="lifespace.request_user_delegation") {
-      if (Object.keys(args).some(k=>!["modelKey","operation","reason"].includes(k))
-        || !DELEGATION_MODEL.test(args.modelKey||"") || !delegatedOp(args.operation)
-        || typeof args.reason!=="string" || args.reason.trim().length<4 || args.reason.trim().length>250)
+      const composite=Array.isArray(args.operations);
+      const requested=composite?args.operations:[{modelKey:args.modelKey,operation:args.operation}];
+      if (Object.keys(args).some(k=>!["modelKey","operation","operations","reason"].includes(k))
+        || typeof args.reason!=="string" || args.reason.trim().length<4 || args.reason.trim().length>250
+        || (composite?(args.modelKey!==undefined || args.operation!==undefined
+          || requested.length<2 || requested.length>8)
+          : args.operations!==undefined)
+        || requested.some(op=>!op || typeof op!=="object" || Array.isArray(op)
+          || !DELEGATION_MODEL.test(op.modelKey||"") || !delegatedOp(op.operation)
+          || (composite && Object.keys(op).sort().join(",")!=="modelKey,operation"))
+        || new Set(requested.map(op=>op.modelKey+":"+op.operation)).size!==requested.length)
         return rpcError(message.id,-32602,"Invalid User Delegation request");
-      if (!["query","get","file_read"].includes(args.operation)
+      if (requested.some(op=>!["query","get","file_read"].includes(op.operation))
         && !authorized.context.scopes.includes("resources:write"))
         return writeScopeStepUp(message.id,config,request,modern);
       const state=message.params.requestState;
@@ -1084,7 +1107,7 @@ export async function handleIdentityOAuthMcp(request, env) {
         }
         if(result.status==="pending")
           return approvalInputRequired(message.id,state,{...pending,
-            modelKey:args.modelKey,operation:args.operation},modern);
+            ...(composite?{operations:args.operations}:{modelKey:args.modelKey,operation:args.operation})},modern);
         return rpcResult(message.id,{isError:true,
           content:[{type:"text",text:"LifeSpace Account Delegation "+result.status
             +"; no operation was executed."}]},modern);
@@ -1116,7 +1139,7 @@ export async function handleIdentityOAuthMcp(request, env) {
       catch {return rpcError(message.id,-32603,"Unable to protect elicitation continuation");}
       if(!state)return rpcError(message.id,-32603,"Invalid Core approval URL or pending request");
       return approvalInputRequired(message.id,state,{
-        url:pending.approvalUrl,modelKey:args.modelKey,operation:args.operation,
+        url:pending.approvalUrl,...(composite?{operations:args.operations}:{modelKey:args.modelKey,operation:args.operation}),
       },modern);
     }
     return rpcResult(message.id,coreToolResult(outcome),modern);
