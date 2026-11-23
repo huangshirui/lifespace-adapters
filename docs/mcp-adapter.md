@@ -1,3 +1,11 @@
+## 2026-11-23 · Hermes delegated-error compatibility follow-up / 兼容仅展示文本错误的客户端
+
+Real Hermes Staging invocation of authorized `activity.create` with `data: {}` returned only `INVALID_MUTATION_ARGUMENTS` to the agent, despite Core reaching HTTP 400. The original P0 adapter projected validated `fieldPath/reasonCode/repair` solely into MCP `structuredContent`, leaving `content[0].text` as just the legacy code. Some MCP clients or wrappers surface only the error text, so the structured-only representation is not a sufficient compatibility fallback. Whether Hermes itself also discards the MCP result envelope requires direct raw MCP inspection; this patch does not assume that diagnosis is settled.
+
+For **strictly validated Core-owned post-authorization field errors only**, MCP now mirrors the same bounded, static field diagnostic into the first text item's value, e.g. `INVALID_MUTATION_ARGUMENTS at data.name (FIELD_REQUIRED): Supply this required field using the current authorized Model Contract.`. It still emits `structuredContent` with unchanged `code`, `fieldPath`, `reasonCode`, `repair`. Without safe detail (including older Core), text remains the unchanged coarse code; permission, hidden-resource, Provider and untrusted-message cases never get field-level text. Native Model Contract and Core are unchanged.
+
+**State:** Follow-up implementation is not a claim of successful Hermes E2E or Production release. A true Hermes Staging retry must establish whether the client surfaces the new error text before marking #646 P0 accepted.
+
 ## 2026-11-23 · Canonical model-field error projection / Model 字段错误反馈（P0 开发候选，未部署）
 
 The delegated `lifespace.execute_user_delegation` tool keeps the prior coarse error text and now optionally projects canonical LifeSpace Core Kernel 0.58.0 model-input error metadata into MCP `structuredContent`. Only an **authorized Create/Update** HTTP 400/422 response with Core `error.code` = `INVALID_RESOURCE` or `VALIDATION_ERROR`, and strictly validated `error.details: {fieldPath,reasonCode,repair}`, can produce a field path such as `data.category`. Core owns this error after current User/Application/Space/Model/Delegation and operation authorization; Adapter never guesses required fields, enums or validation outcomes.
