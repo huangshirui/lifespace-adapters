@@ -1,4 +1,5 @@
 import { projectCoreOperationCatalog, buildCoreOperation } from "./generic-operation-projection.mjs";
+import { delegationExecutionInputSchema, delegationExecutionArgumentProblem } from "./delegation-arguments.mjs";
 
 // New Identity-owned OAuth MCP Resource Server. Not the retired Access
 // Managed OAuth Preview. This layer never exchanges CF Access assertions,
@@ -520,16 +521,9 @@ function userDelegationTools() {
     { name: "lifespace.execute_user_delegation",
       ...oauthToolSecurity(),
       title: "Execute Account-Approved LifeSpace User Delegation",
-      description: "Execute an exact Core model operation under a Delegation independently approved by the signed-in LifeSpace Account User. Account selects one-use, bounded time-limited repeat, or until-revoked lifetime; the Agent cannot choose or widen it. Native/Person and Provider-backed External operations stay restricted by current OAuth, User/Agent, Space, Model and policy authority; Core rejects revoked, expired, used, or cross-operation Delegations. External one-use write authority is consumed before the single Provider attempt, including on failure; repeated grants permit independently authorized attempts without exactly-once guarantees. For file_read, Core returns a short-lived direct download URL. For file_upload, use data.phase=begin with fieldKey, optional recordId, name, contentType and size; PUT directly using the returned URL and headers, then data.phase=complete with uploadId. Upload requires timed or until-revoked Delegation and does not grant record mutation. Treat signed URLs as secrets; do not persist or share them.",
+      description: "Execute an exact Core model operation under a Delegation independently approved by the signed-in LifeSpace Account User. Account selects one-use, bounded time-limited repeat, or until-revoked lifetime; the Agent cannot choose or widen it. Native/Person and Provider-backed External operations stay restricted by current OAuth, User/Agent, Space, Model and policy authority; Core rejects revoked, expired, used, or cross-operation Delegations. External one-use write authority is consumed before the single Provider attempt, including on failure; repeated grants permit independently authorized attempts without exactly-once guarantees. For file_read, provide top-level recordId and data.fieldKey + data.fileId (linked File); Core returns a short-lived direct download URL. For file_upload, use data.phase=begin with fieldKey, optional data.recordId, name, contentType and size; PUT directly using the returned URL and headers, then data.phase=complete with uploadId. Upload requires timed or until-revoked Delegation and does not grant record mutation. After complete, preserve the returned fil_* ID: if subsequent create/update fails, repair its model fields and reuse the same File ID rather than uploading again. For create/update payload fields, consult the published LifeSpace Model Contract; this generic protocol tool cannot invent model-specific required fields or enums. Treat signed URLs as secrets; do not persist or share them.",
       annotations:{readOnlyHint:false,destructiveHint:true,idempotentHint:false,openWorldHint:false},
-      inputSchema:{type:"object",additionalProperties:false,required:["delegationId","modelKey","operation"],
-        properties:{
-          delegationId:{type:"string",pattern:"^dlg_[A-Za-z0-9_-]+$"},
-          modelKey:{type:"string",pattern:"^[a-z][a-z0-9_]{1,62}$"},
-          operation:delegatedOpSchema,
-          recordId:{type:"string",pattern:"^(rec|per)_[A-Za-z0-9_-]+$"},
-          data:{type:"object",description:"Canonical model payload validated by LifeSpace Core."},
-        }},
+      inputSchema:delegationExecutionInputSchema(),
     },
   ];
 }
@@ -645,8 +639,21 @@ function validOrigin(request, config) {
 // an MCP structuredContent object (compatible with both protocol eras).
 // No model-specific output schema is fabricated by this protocol adapter.
 function coreToolResult(outcome) {
-  if (outcome.error) return {isError:true,
-    content:[{type:"text",text:outcome.error}]};
+  if (outcome.error) {
+    // Keep legacy text codes stable. Only caller-actionable generic guidance
+    // is structured; untrusted Core error bodies and hidden identifiers never
+    // cross this boundary.
+    const repair={
+      INVALID_MUTATION_ARGUMENTS:"The canonical model rejected data. Check the published Model Contract for required fields, types and enums; repair and retry. If a File was already uploaded, reuse its fil_* ID.",
+      INVALID_OPERATION_ARGUMENTS:"Check the published operation input schema, the exact file field and identifiers; do not blindly retry an upload completion.",
+      INVALID_QUERY_ARGUMENTS:"Check the canonical query contract and supported filters and pagination fields.",
+      RECORD_VERSION_CONFLICT:"Read the current authorized record version before retrying an update.",
+      CORE_PERMISSION_DENIED:"Recheck current authorization and Delegation status, including expiry or revocation; do not infer whether a hidden resource exists.",
+      CORE_NOT_FOUND:"Recheck the supplied visible identifier and current authorization; resource existence is intentionally not disclosed.",
+    }[outcome.error];
+    return {isError:true,content:[{type:"text",text:outcome.error}],
+      ...(repair?{structuredContent:{code:outcome.error,repair}}:{})};
+  }
   const value=outcome.payload?.data ?? outcome.payload ?? null;
   const structuredContent=value!==null && typeof value==="object"
     && !Array.isArray(value) ? value : {data:value};
@@ -1122,7 +1129,15 @@ export async function handleIdentityOAuthMcp(request, env) {
       path="/api/v1/spaces/"+encodeURIComponent(space)+"/oauth-delegation-requests/"+encodeURIComponent(args.requestId);
     } else {
       const next=delegatedCoreOperation(space,args);
-      if (!next) return rpcError(message.id,-32602,"Invalid Delegation execution arguments");
+      if (!next) {
+        // Diagnose only caller-supplied structural paths. Never inspect or
+        // distinguish hidden Core records/Delegations using these messages.
+        const issue=delegationExecutionArgumentProblem(args)
+          ??{code:"INVALID_DELEGATION_ARGUMENT",fieldPath:null,
+            repair:"Check the selected operation input schema and current model contract."};
+        const path=issue.fieldPath?" at "+issue.fieldPath:"";
+        return rpcError(message.id,-32602,issue.code+path+": "+issue.repair,200,issue);
+      }
       if (!["query","get","file_read"].includes(args.operation)
         && !authorized.context.scopes.includes("resources:write"))
         return writeScopeStepUp(message.id,config,request,modern);
