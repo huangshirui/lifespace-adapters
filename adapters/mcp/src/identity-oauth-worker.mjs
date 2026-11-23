@@ -315,8 +315,31 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
     // Never forward Core's raw error body: it may contain private details.
     if ((genericCommand || delegatedFileUpload || delegatedFileRead || delegatedAction || delegatedPerson || path.endsWith("/records/query") || mutationPath)
       && (response.status === 400 || response.status === 422)) {
-      return { error: (genericCommand || delegatedFileUpload || delegatedFileRead || delegatedAction || delegatedPerson) ? "INVALID_OPERATION_ARGUMENTS"
-        : mutationPath ? "INVALID_MUTATION_ARGUMENTS" : "INVALID_QUERY_ARGUMENTS" };
+      const errorCode = (genericCommand || delegatedFileUpload || delegatedFileRead || delegatedAction || delegatedPerson)
+        ? "INVALID_OPERATION_ARGUMENTS" : mutationPath ? "INVALID_MUTATION_ARGUMENTS" : "INVALID_QUERY_ARGUMENTS";
+      // A canonical Core input error, after successful current authorization,
+      // may expose a bounded field path. Never forward arbitrary Core error text,
+      // Provider diagnostics, policy denials, or record existence.
+      let fieldProblem;
+      if (mutationPath && delegationId) {
+        try {
+          const raw = await response.text();
+          if (raw.length <= 4096) {
+            const error = JSON.parse(raw)?.error;
+            const details = error?.details;
+            if (["INVALID_RESOURCE", "VALIDATION_ERROR"].includes(error?.code)
+              && details && typeof details === "object" && !Array.isArray(details)
+              && /^data\\.[a-z][A-Za-z0-9]{0,62}$/u.test(details.fieldPath ?? "")
+              && ["FIELD_REQUIRED","FIELD_UNKNOWN","FIELD_UNAVAILABLE","FIELD_READ_ONLY",
+                "FIELD_IMMUTABLE","FIELD_INVALID_ENUM","FIELD_INVALID_VALUE"].includes(details.reasonCode)
+              && typeof details.repair === "string" && details.repair.length <= 180
+              && /^[A-Za-z0-9 .,';*_-]+$/u.test(details.repair)) {
+              fieldProblem = {fieldPath:details.fieldPath,reasonCode:details.reasonCode,repair:details.repair};
+            }
+          }
+        } catch { /* malformed/unexpected Core detail stays opaque */ }
+      }
+      return {error:errorCode,...(fieldProblem?{fieldProblem}:{})};
     }
     if ((genericCommand || delegatedAction || delegatedPerson || mutationPath) && response.status === 409) return { error: "RECORD_VERSION_CONFLICT" };
     // Do not forward private Core response bodies. Map status to stable,
@@ -652,7 +675,8 @@ function coreToolResult(outcome, delegated = false) {
       CORE_NOT_FOUND:"Recheck the supplied visible identifier and current authorization; resource existence is intentionally not disclosed.",
     }[outcome.error];
     return {isError:true,content:[{type:"text",text:outcome.error}],
-      ...(delegated&&repair?{structuredContent:{code:outcome.error,repair}}:{})};
+      ...(delegated&&repair?{structuredContent:{code:outcome.error,
+        ...(outcome.fieldProblem??{}),repair:outcome.fieldProblem?.repair??repair}}:{})};
   }
   const value=outcome.payload?.data ?? outcome.payload ?? null;
   const structuredContent=value!==null && typeof value==="object"
