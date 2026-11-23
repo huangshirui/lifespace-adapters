@@ -1516,6 +1516,49 @@ test("malformed or oversized protocol envelope retains authentication precedence
 });
 
 
+test("delegated file read reports missing data.fileId before Core and keeps hidden errors coarse",async()=>{
+  const fileId="fil_"+"a".repeat(32);
+  const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read"});
+  async function invoke(args,fixture=f){
+    const response=await handleIdentityOAuthMcp(rpc("tools/call",{
+      params:{name:"lifespace.execute_user_delegation",arguments:args},
+    }),fixture.env);
+    return response.json();
+  }
+  const base={delegationId:"dlg_synthetic",modelKey:"task",operation:"file_read",
+    recordId:"rec_synthetic"};
+  const missing=await invoke({...base,data:{fieldKey:"attachment"}});
+  assert.equal(missing.error.code,-32602);
+  assert.equal(missing.error.data.code,"MISSING_DELEGATION_ARGUMENT");
+  assert.equal(missing.error.data.fieldPath,"data.fileId");
+  assert.match(missing.error.message,/data\\.fileId/u);
+  assert.equal(f.calls.some(x=>x.service==="CORE"&&x.path.endsWith("/file-downloads")),false);
+  const denied=connectedFixture({mayDelegate:true,denied:true});
+  const hidden=await invoke({...base,data:{fieldKey:"attachment",fileId}},denied);
+  assert.equal(hidden.result.content[0].text,"CORE_PERMISSION_DENIED");
+  assert.equal(hidden.result.structuredContent.code,"CORE_PERMISSION_DENIED");
+  assert.ok(!JSON.stringify(hidden).includes("private denial"));
+  assert.ok(!JSON.stringify(hidden).includes("rec_synthetic"));
+});
+
+test("Core mutation validation remains authoritative and provides non-leaking retry guidance",async()=>{
+  const f=connectedFixture({mayDelegate:true,oauthScopes:"resources:read resources:write",
+    mutationStatus:422});
+  const response=await handleIdentityOAuthMcp(rpc("tools/call",{
+    params:{name:"lifespace.execute_user_delegation",arguments:{
+      delegationId:"dlg_synthetic",modelKey:"task",operation:"create",
+      data:{unsupported:"synthetic-only"},
+    }},
+  }),f.env);
+  const result=(await response.json()).result;
+  assert.equal(result.isError,true);
+  assert.equal(result.content[0].text,"INVALID_MUTATION_ARGUMENTS");
+  assert.equal(result.structuredContent.code,"INVALID_MUTATION_ARGUMENTS");
+  assert.match(result.structuredContent.repair,/Model Contract/u);
+  assert.match(result.structuredContent.repair,/reuse its fil_/u);
+  assert.ok(!JSON.stringify(result).includes("synthetic write failure"));
+});
+
 test("direct and represented file reads return the canonical descriptor without proxying bytes",async(t)=>{
   const fileId="fil_"+"a".repeat(32);
   const url="https://files.example.com/synthetic-download?fixture=not-a-real-signature";
