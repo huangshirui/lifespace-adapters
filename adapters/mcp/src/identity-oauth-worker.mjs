@@ -329,7 +329,7 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
             const details = error?.details;
             if (["INVALID_RESOURCE", "VALIDATION_ERROR"].includes(error?.code)
               && details && typeof details === "object" && !Array.isArray(details)
-              && /^data\\.[a-z][A-Za-z0-9]{0,62}$/u.test(details.fieldPath ?? "")
+              && /^data\.[a-z][A-Za-z0-9]{0,62}$/u.test(details.fieldPath ?? "")
               && ["FIELD_REQUIRED","FIELD_UNKNOWN","FIELD_UNAVAILABLE","FIELD_READ_ONLY",
                 "FIELD_IMMUTABLE","FIELD_INVALID_ENUM","FIELD_INVALID_VALUE"].includes(details.reasonCode)
               && typeof details.repair === "string" && details.repair.length <= 180
