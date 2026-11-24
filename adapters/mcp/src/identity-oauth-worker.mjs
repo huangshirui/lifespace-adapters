@@ -327,7 +327,9 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
           if (raw.length <= 4096) {
             const error = JSON.parse(raw)?.error;
             const details = error?.details;
-            if (["INVALID_RESOURCE", "VALIDATION_ERROR"].includes(error?.code)
+            if ((["INVALID_RESOURCE", "VALIDATION_ERROR"].includes(error?.code)
+                || (error?.code==="INVALID_REQUEST" && details?.fieldPath==="data.version"
+                  && ["FIELD_REQUIRED","FIELD_INVALID_VALUE"].includes(details?.reasonCode)))
               && details && typeof details === "object" && !Array.isArray(details)
               && /^data\.[a-z][A-Za-z0-9]{0,62}$/u.test(details.fieldPath ?? "")
               && ["FIELD_REQUIRED","FIELD_UNKNOWN","FIELD_UNAVAILABLE","FIELD_READ_ONLY",
@@ -541,10 +543,19 @@ function userDelegationTools() {
       inputSchema:{type:"object",additionalProperties:false,required:["requestId"],
         properties:{requestId:{type:"string",pattern:"^arq_[a-f0-9]{32}$"}}},
     },
+    { name:"lifespace.describe_user_delegation",
+      ...oauthToolSecurity(),
+      title:"Describe Approved LifeSpace Operation",
+      description:"Get the current canonical input schema for one already-approved exact operation, including required fields, types and version when applicable. Use before constructing execute_user_delegation arguments. Does not consume a single use, request approval, read records or grant authority.",
+      annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+      inputSchema:{type:"object",additionalProperties:false,required:["delegationId","modelKey","operation"],
+        properties:{delegationId:{type:"string",pattern:"^dlg_[A-Za-z0-9_-]+$"},
+          modelKey:{type:"string",pattern:"^[a-z][a-z0-9_]{1,62}$"},operation:delegatedOpSchema}},
+    },
     { name: "lifespace.execute_user_delegation",
       ...oauthToolSecurity(),
       title: "Execute Account-Approved LifeSpace User Delegation",
-      description: "Execute an exact Core model operation under a Delegation independently approved by the signed-in LifeSpace Account User. Account selects one-use, bounded time-limited repeat, or until-revoked lifetime; the Agent cannot choose or widen it. Native/Person and Provider-backed External operations stay restricted by current OAuth, User/Agent, Space, Model and policy authority; Core rejects revoked, expired, used, or cross-operation Delegations. External one-use write authority is consumed before the single Provider attempt, including on failure; repeated grants permit independently authorized attempts without exactly-once guarantees. For file_read, provide top-level recordId and data.fieldKey + data.fileId (linked File); Core returns a short-lived direct download URL. For file_upload, use data.phase=begin with fieldKey, optional data.recordId, name, contentType and size; PUT directly using the returned URL and headers, then data.phase=complete with uploadId. Upload requires timed or until-revoked Delegation and does not grant record mutation. After complete, preserve the returned fil_* ID: if subsequent create/update fails, repair its model fields and reuse the same File ID rather than uploading again. For create/update payload fields, consult the published LifeSpace Model Contract; this generic protocol tool cannot invent model-specific required fields or enums. Treat signed URLs as secrets; do not persist or share them.",
+      description: "Execute an exact Core model operation under a Delegation independently approved by the signed-in LifeSpace Account User. Account selects one-use, bounded time-limited repeat, or until-revoked lifetime; the Agent cannot choose or widen it. Native/Person and Provider-backed External operations stay restricted by current OAuth, User/Agent, Space, Model and policy authority; Core rejects revoked, expired, used, or cross-operation Delegations. External one-use write authority is consumed before the single Provider attempt, including on failure; repeated grants permit independently authorized attempts without exactly-once guarantees. For file_read, provide top-level recordId and data.fieldKey + data.fileId (linked File); Core returns a short-lived direct download URL. For file_upload, use data.phase=begin with fieldKey, optional data.recordId, name, contentType and size; PUT directly using the returned URL and headers, then data.phase=complete with uploadId. Upload requires timed or until-revoked Delegation and does not grant record mutation. After complete, preserve the returned fil_* ID: if subsequent create/update fails, repair its model fields and reuse the same File ID rather than uploading again. Before creating or updating, call describe_user_delegation with the matching approved selector to obtain the current canonical input schema. Send only the required mutation metadata and changed fields for PATCH where the returned contract specifies this; never guess model-specific fields or enums. Treat signed URLs as secrets; do not persist or share them.",
       annotations:{readOnlyHint:false,destructiveHint:true,idempotentHint:false,openWorldHint:false},
       inputSchema:delegationExecutionInputSchema(),
     },
@@ -1082,6 +1093,45 @@ export async function handleIdentityOAuthMcp(request, env) {
         seen.add(key);return false;
       }))return rpcResult(message.id,coreToolResult({error:"CORE_OPERATION_CATALOG_INVALID"}),modern);
     return rpcResult(message.id,coreToolResult({payload:{data:{eligibleOperations:rows}}}),modern);
+  }
+  if(message.params.name==="lifespace.describe_user_delegation"){
+    if(!authorized.context.mayRequestDelegation)
+      return rpcError(message.id,-32602,"User Delegation is disabled for this OAuth grant");
+    const args=message.params.arguments;
+    if(message.params.requestState!==undefined||message.params.inputResponses!==undefined
+      ||Object.keys(args).sort().join(",")!=="delegationId,modelKey,operation"
+      ||typeof args.delegationId!=="string"||!DELEGATION_ID.test(args.delegationId)
+      ||typeof args.modelKey!=="string"||!DELEGATION_MODEL.test(args.modelKey)
+      ||!delegatedOp(args.operation))
+      return rpcError(message.id,-32602,"Exact approved Delegation selector, model and operation are required");
+    const token=await coreExecution(authorized,request,config,env,args.delegationId);
+    if(token.error)return json({error:token.error},503);
+    const space=authorized.context.spaceId;
+    const path="/api/v1/spaces/"+encodeURIComponent(space)+"/_discovery/operations?"
+      +new URLSearchParams({modelKey:args.modelKey,operation:args.operation}).toString();
+    const outcome=await coreJson(env,token.token,path,"GET",undefined,args.delegationId);
+    if(outcome.error)return rpcResult(message.id,coreToolResult(outcome,true),modern);
+    try{
+      const data=outcome.payload?.data;
+      if(!data||!Array.isArray(data.operations)||data.operations.length===0)
+        return rpcResult(message.id,coreToolResult({error:"CORE_NOT_FOUND"},true),modern);
+      if(data.operations.length!==1||data.operations[0].modelKey!==args.modelKey||data.operations[0].operation!==args.operation)
+        throw Error("Mismatched operation");
+      const projected=projectCoreOperationCatalog(data,space);
+      const tool=projected.tools[0],binding=projected.bindings[tool.name];
+      if(!binding.requiredScopes.every(scope=>authorized.context.scopes.includes(scope)))
+        return rpcResult(message.id,coreToolResult({error:"CORE_PERMISSION_DENIED"},true),modern);
+      // Translate only the transport envelope; the Core-owned field schemas
+      // and their closed $defs references are preserved without inference.
+      const schema=structuredClone(tool.inputSchema);
+      delete schema.properties.spaceId;
+      schema.properties={delegationId:{type:"string",pattern:"^dlg_[A-Za-z0-9_-]+$"},
+        modelKey:{const:args.modelKey},operation:{const:args.operation},...schema.properties};
+      schema.required=["delegationId","modelKey","operation",...schema.required.filter(key=>key!=="spaceId")];
+      return rpcResult(message.id,coreToolResult({payload:{data:{
+        modelKey:args.modelKey,operation:args.operation,requiredScopes:binding.requiredScopes,inputSchema:schema,
+      }}}),modern);
+    }catch{return rpcResult(message.id,coreToolResult({error:"CORE_OPERATION_CATALOG_INVALID"},true),modern);}
   }
   if (message.params.name.startsWith("lifespace.") && [
       "lifespace.request_user_delegation", "lifespace.user_delegation_status",
