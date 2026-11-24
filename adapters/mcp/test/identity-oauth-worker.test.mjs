@@ -369,11 +369,11 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
         properties:{spaceId:{type:"string",enum:[wrongSpace?"spc_other":"spc_synthetic"]},
           ...(op==="get"||op==="update"||op==="delete"||op==="file_read"
             ?{recordId:{type:"string",minLength:1}}:{}),
-          ...(op==="get"?{}:{data:op==="create"&&mutations
-            ?{$ref:"#/$defs/Create"}:{type:"object"}})},
+          ...(op==="get"?{}:{data:mutations&&["create","update"].includes(op)
+            ?{$ref:op==="create"?"#/$defs/Create":"#/$defs/Update"}:{type:"object"}})},
         required:["spaceId",...(op==="get"||op==="update"||op==="delete"||op==="file_read"?["recordId"]:[]),
           ...(op==="create"||op==="update"||op==="delete"||op==="file_read"||op==="file_upload"?["data"]:[])],
-        ...(op==="create"&&mutations?{$defs:detail.data.mutations.$defs}:{})}};
+        ...(mutations&&["create","update"].includes(op)?{$defs:detail.data.mutations.$defs}:{})}};
   }));
   const operationByRef = new Map(syntheticCatalog.map(row => [row.operationRef,row.operation]));
   const env = {
@@ -475,7 +475,9 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
         const model=params.get("modelKey"),op=params.get("operation");
         if(params.get("mode")==="delegation_request"&&eligibilityResponse!==null)return Response.json({data:eligibilityResponse});
         if(params.get("mode")==="configuration"&&configurationResponse!==null)return Response.json({data:configurationResponse});
-        return Response.json({data:{operations:(zeroDirectCatalog?[]:syntheticCatalog).filter(row=>
+        const represented=mayDelegate&&!trustedAgent&&init.headers["x-lifespace-delegation-id"]==="dlg_synthetic";
+        if(represented&&denied)return Response.json({error:"private denial"},{status:403});
+        return Response.json({data:{operations:(zeroDirectCatalog&&!represented?[]:syntheticCatalog).filter(row=>
           ignoreCatalogFilter||((!model||row.modelKey===model)&&(!op||row.operation===op)))}});
       }
       const invocation = /^\/api\/v1\/spaces\/spc_synthetic\/_operations\/(op_[a-f0-9]{64})\/invoke$/u.exec(path);
@@ -1084,6 +1086,40 @@ test("delegation eligibility is separate metadata and never creates direct tool 
     const result=(await (await call(fixture,{})).json()).result;
     assert.equal(result.isError,true);
   }
+});
+
+test("approved operation schema is fetched on demand, not from direct Agent Grants",async()=>{
+  const f=connectedFixture({mayDelegate:true,zeroDirectCatalog:true,mutations:true,
+    advertisedAccess:["read","write"],oauthScopes:"resources:read resources:write"});
+  const listed=await handleIdentityOAuthMcp(rpc("tools/list"),f.env);
+  const names=(await listed.json()).result.tools.map(tool=>tool.name);
+  assert.ok(names.includes("lifespace.describe_user_delegation"));
+  assert.ok(!names.includes("lifespace.update.task"));
+  const args={delegationId:"dlg_synthetic",modelKey:"task",operation:"update"};
+  const call=(fixture,input)=>handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.describe_user_delegation",arguments:input,
+  }}),fixture.env);
+  const result=(await (await call(f,args)).json()).result;
+  assert.equal(result.isError,undefined);
+  const descriptor=JSON.parse(result.content[0].text);
+  assert.deepEqual(descriptor.inputSchema.required,["delegationId","modelKey","operation","recordId","data"]);
+  assert.equal(descriptor.inputSchema.properties.spaceId,undefined);
+  assert.equal(descriptor.inputSchema.properties.data.$ref,"#/$defs/Update");
+  assert.deepEqual(descriptor.inputSchema.$defs.Update.required,["version"]);
+  assert.ok(f.calls.some(x=>x.path.endsWith("/_discovery/operations")&&x.url.includes("modelKey=task&operation=update")
+    &&x.init.headers["x-lifespace-delegation-id"]==="dlg_synthetic"&&x.init.method==="GET"));
+  assert.equal(f.calls.some(x=>x.service==="CORE"&&x.init.method!=="GET"),false);
+  for(const fixture of [
+    connectedFixture({mayDelegate:true,mutations:true,advertisedAccess:["read","write"],denied:true,oauthScopes:"resources:read resources:write"}),
+    connectedFixture({mayDelegate:true,mutations:true,advertisedAccess:["read","write"],ignoreCatalogFilter:true,oauthScopes:"resources:read resources:write"}),
+  ]){
+    const failed=(await (await call(fixture,args)).json()).result;
+    assert.equal(failed.isError,true);
+    assert.equal(failed.structuredContent?.inputSchema,undefined);
+    assert.ok(!failed.content[0].text.includes("private denial"));
+  }
+  const invalid=(await (await call(f,{...args,data:{}})).json()).error;
+  assert.equal(invalid.code,-32602);
 });
 
 test("third-party OAuth may request LifeSpace Account URL, status and explicit represented execution", async () => {
