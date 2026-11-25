@@ -243,7 +243,7 @@ async function coreExecution(authorized, request, config, env, delegationId = nu
   return validateExecutionData(result?.data, authorized);
 }
 
-async function coreJson(env, coreToken, path, method = "GET", body, delegationId = null, trustedResource = null) {
+async function coreJson(env, coreToken, path, method = "GET", body, delegationId = null, trustedResource = null, targetDelegationId = null) {
   const recordGet = method === "GET" && /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records\/rec_[A-Za-z0-9_-]+$/u.test(path);
   const mutationPath = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records(?:\/rec_[A-Za-z0-9_-]+)?$/u.test(path)
     && (method === "POST" && path.endsWith("/records") || ["PATCH", "DELETE"].includes(method) && !path.endsWith("/records"));
@@ -260,7 +260,7 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
     &&(catalogMode===null||catalogMode==="delegation_request"||(catalogMode==="configuration"&&Boolean(trustedResource)&&!delegationId))
     &&(catalogMode==="delegation_request"||catalogMode==="configuration"||catalogModel!==null)
     &&(catalogModel===null||/^[a-z][a-z0-9_]{1,62}$/u.test(catalogModel))
-    &&(catalogOperation===null||(catalogModel!==null&&/^(query|get|create|update|delete|file_read|file_upload|action:[a-z][a-z0-9_-]{0,62})$/u.test(catalogOperation))));
+    &&(catalogOperation===null||(catalogModel!==null&&/^(query|get|create|update|delete|file_read|file_upload|relation_create|relation_get|relation_query|relation_delete|action:[a-z][a-z0-9_-]{0,62})$/u.test(catalogOperation))));
   const genericCatalog = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_discovery\/operations$/u.test(catalogUrl.pathname)
     && method==="GET"&&validCatalogFilter&&!catalogUrl.hash;
   const genericCommand = /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/_operations\/op_[a-f0-9]{64}\/invoke$/u.test(path)
@@ -294,7 +294,15 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
     && /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/records\/rec_[A-Za-z0-9_-]+\/file-downloads$/u.test(path);
   const delegatedFileUpload=Boolean(delegationId)&&method==="POST"
     && /^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/models\/[a-z][a-z0-9_]{1,62}\/file-uploads(?:\/upl_[a-f0-9]{32}\/complete)?$/u.test(path);
-  if (!delegatedFileUpload && !delegatedFileRead && !genericCatalog && !authorityEligibility && !genericCommand && !delegatedAction && !delegatedPerson && !oauthRequest && !recordGet && !mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
+  const relationUrl=new URL("https://core.internal"+path);
+  const relationPath=/^\/api\/v1\/spaces\/spc_[A-Za-z0-9_-]+\/semantic-relations(?:\/(rel_[A-Za-z0-9_-]+))?$/u.exec(relationUrl.pathname);
+  const delegatedRelation=Boolean(relationPath&&delegationId&&targetDelegationId&&!trustedResource
+    &&DELEGATION_ID.test(targetDelegationId)&&targetDelegationId!==delegationId&&!relationUrl.hash
+    &&(method==="GET"&&[...relationUrl.searchParams.keys()].every(k=>
+      ["sourceModelKey","sourceRecordId","targetModelKey","targetRecordId","predicate","limit","cursor","hydrate"].includes(k))
+      ||!relationUrl.search&&(method==="POST"&&!relationPath[1]||method==="DELETE"&&relationPath[1])));
+  if(targetDelegationId&&!delegatedRelation)return {error:"CORE_PATH_REJECTED"};
+  if (!delegatedRelation && !delegatedFileUpload && !delegatedFileRead && !genericCatalog && !authorityEligibility && !genericCommand && !delegatedAction && !delegatedPerson && !oauthRequest && !recordGet && !mutationPath && !/^\/api\/v1\/(me\/_discovery\/inventory|spaces\/spc_[A-Za-z0-9_-]+\/(?:_discovery\/models\/(?:batch|[a-z][a-z0-9_-]*)|models\/[a-z][a-z0-9_-]*\/records\/query))$/u.test(path)) {
     return { error: "CORE_PATH_REJECTED" };
   }
   let response;
@@ -303,6 +311,7 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
       method, headers: {
         authorization: "Bearer " + coreToken,
         ...(delegationId ? { "x-lifespace-delegation-id": delegationId } : {}),
+        ...(delegatedRelation ? {"x-lifespace-target-delegation-id":targetDelegationId}:{}),
         ...(trustedResource ? { "x-lifespace-mcp-resource": trustedResource } : {}),
         accept: "application/json",
         ...(body === undefined ? {} : { "content-type": "application/json" }),
@@ -313,9 +322,9 @@ async function coreJson(env, coreToken, path, method = "GET", body, delegationId
   if (!response.ok) {
     // An invalid Canonical Query is a caller error, not a Core outage.
     // Never forward Core's raw error body: it may contain private details.
-    if ((genericCommand || delegatedFileUpload || delegatedFileRead || delegatedAction || delegatedPerson || path.endsWith("/records/query") || mutationPath)
+    if ((genericCommand || delegatedRelation || delegatedFileUpload || delegatedFileRead || delegatedAction || delegatedPerson || path.endsWith("/records/query") || mutationPath)
       && (response.status === 400 || response.status === 422)) {
-      const errorCode = (genericCommand || delegatedFileUpload || delegatedFileRead || delegatedAction || delegatedPerson)
+      const errorCode = (genericCommand || delegatedRelation || delegatedFileUpload || delegatedFileRead || delegatedAction || delegatedPerson)
         ? "INVALID_OPERATION_ARGUMENTS" : mutationPath ? "INVALID_MUTATION_ARGUMENTS" : "INVALID_QUERY_ARGUMENTS";
       // A canonical Core input error, after successful current authorization,
       // may expose a bounded field path. Never forward arbitrary Core error text,
@@ -386,7 +395,9 @@ async function currentToolProjection(env,coreToken,selectedSpace,filter){
 const DELEGATION_MODEL = /^[a-z][a-z0-9_]{1,62}$/u;
 const DELEGATION_ID = /^dlg_[A-Za-z0-9_-]+$/u;
 const REQUEST_ID = /^arq_[a-f0-9]{32}$/u;
-const DELEGATED_OPS = ["get", "query", "create", "update", "delete", "file_read", "file_upload"];
+const RELATION_OPS=["relation_create","relation_get","relation_query","relation_delete"];
+const DELEGATED_OPS = ["get", "query", "create", "update", "delete", "file_read", "file_upload",...RELATION_OPS];
+const READ_DELEGATED_OPS=["query","get","file_read","relation_get","relation_query"];
 const DELEGATED_ACTION = /^action:([a-z][a-z0-9_-]{0,62})$/u;
 const delegatedOp = value => typeof value === "string"
   && (DELEGATED_OPS.includes(value) || DELEGATED_ACTION.test(value));
@@ -555,7 +566,7 @@ function userDelegationTools() {
     { name: "lifespace.execute_user_delegation",
       ...oauthToolSecurity(),
       title: "Execute Account-Approved LifeSpace User Delegation",
-      description: "Execute an exact Core model operation under a Delegation independently approved by the signed-in LifeSpace Account User. Account selects one-use, bounded time-limited repeat, or until-revoked lifetime; the Agent cannot choose or widen it. Native/Person and Provider-backed External operations stay restricted by current OAuth, User/Agent, Space, Model and policy authority; Core rejects revoked, expired, used, or cross-operation Delegations. External one-use write authority is consumed before the single Provider attempt, including on failure; repeated grants permit independently authorized attempts without exactly-once guarantees. For file_read, provide top-level recordId and data.fieldKey + data.fileId (linked File); Core returns a short-lived direct download URL. For file_upload, use data.phase=begin with fieldKey, optional data.recordId, name, contentType and size; PUT directly using the returned URL and headers, then data.phase=complete with uploadId. Upload requires timed or until-revoked Delegation and does not grant record mutation. After complete, preserve the returned fil_* ID: if subsequent create/update fails, repair its model fields and reuse the same File ID rather than uploading again. Before creating or updating, call describe_user_delegation with the matching approved selector to obtain the current canonical input schema. Send only the required mutation metadata and changed fields for PATCH where the returned contract specifies this; never guess model-specific fields or enums. Treat signed URLs as secrets; do not persist or share them.",
+      description: "Execute an exact Core model operation under a Delegation independently approved by the signed-in LifeSpace Account User. Account selects one-use, bounded time-limited repeat, or until-revoked lifetime; the Agent cannot choose or widen it. Native/Person and Provider-backed External operations stay restricted by current OAuth, User/Agent, Space, Model and policy authority; Core rejects revoked, expired, used, or cross-operation Delegations. External one-use write authority is consumed before the single Provider attempt, including on failure; repeated grants permit independently authorized attempts without exactly-once guarantees. For file_read, provide top-level recordId and data.fieldKey + data.fileId (linked File); Core returns a short-lived direct download URL. For file_upload, use data.phase=begin with fieldKey, optional data.recordId, name, contentType and size; PUT directly using the returned URL and headers, then data.phase=complete with uploadId. Upload requires timed or until-revoked Delegation and does not grant record mutation. After complete, preserve the returned fil_* ID: if subsequent create/update fails, repair its model fields and reuse the same File ID rather than uploading again. For relation_create/get/query/delete, obtain the canonical input from describe_user_delegation and supply the separately approved target get Delegation as targetDelegationId. Relation deletion removes only the edge. Before creating or updating, call describe_user_delegation with the matching approved selector to obtain the current canonical input schema. Send only the required mutation metadata and changed fields for PATCH where the returned contract specifies this; never guess model-specific fields or enums. Treat signed URLs as secrets; do not persist or share them.",
       annotations:{readOnlyHint:false,destructiveHint:true,idempotentHint:false,openWorldHint:false},
       inputSchema:delegationExecutionInputSchema(),
     },
@@ -563,10 +574,41 @@ function userDelegationTools() {
 }
 function delegatedCoreOperation(spaceId, args) {
   if (!args || typeof args !== "object" || Array.isArray(args)
-    || Object.keys(args).some(k => !["delegationId","modelKey","operation","recordId","data"].includes(k))
+    || Object.keys(args).some(k => !["delegationId","targetDelegationId","modelKey","operation","recordId","data"].includes(k))
     || !DELEGATION_ID.test(args.delegationId||"") || !DELEGATION_MODEL.test(args.modelKey||"")
     || !delegatedOp(args.operation)) return null;
   const id=args.recordId;
+  if(RELATION_OPS.includes(args.operation)){
+    if(id!==undefined||args.modelKey==="person"||typeof args.targetDelegationId!=="string"
+      ||!DELEGATION_ID.test(args.targetDelegationId)||args.targetDelegationId===args.delegationId
+      ||!args.data||typeof args.data!=="object"||Array.isArray(args.data))return null;
+    const data=args.data,op=args.operation;
+    const relation="/api/v1/spaces/"+encodeURIComponent(spaceId)+"/semantic-relations";
+    const validRef=ref=>ref&&typeof ref==="object"&&!Array.isArray(ref)
+      &&Object.keys(ref).sort().join(",")==="kind,modelKey,recordId"&&ref.kind==="record"
+      &&typeof ref.modelKey==="string"&&DELEGATION_MODEL.test(ref.modelKey)
+      &&typeof ref.recordId==="string"&&/^rec_[A-Za-z0-9_-]+$/u.test(ref.recordId);
+    const validHydrate=value=>value===undefined||["source","target","both"].includes(value);
+    if(op==="relation_create"||op==="relation_query"){
+      if(!validRef(data.source)||!validRef(data.target)||data.source.modelKey!==args.modelKey)return null;
+      if(data.predicate!==undefined&&(typeof data.predicate!=="string"||!DELEGATION_MODEL.test(data.predicate)))return null;
+      if(op==="relation_create")return Object.keys(data).sort().join(",")==="predicate,source,target"
+        ?{method:"POST",path:relation,body:data}:null;
+      if(Object.keys(data).some(k=>!["source","target","predicate","limit","cursor","hydrate"].includes(k))
+        ||!validHydrate(data.hydrate)||data.limit!==undefined&&(!Number.isSafeInteger(data.limit)||data.limit<1||data.limit>100)
+        ||data.cursor!==undefined&&(typeof data.cursor!=="string"||data.cursor.length>2048))return null;
+      const params=new URLSearchParams({sourceModelKey:data.source.modelKey,sourceRecordId:data.source.recordId,
+        targetModelKey:data.target.modelKey,targetRecordId:data.target.recordId});
+      for(const key of ["predicate","limit","cursor","hydrate"])if(data[key]!==undefined)params.set(key,String(data[key]));
+      return {method:"GET",path:relation+"?"+params.toString()};
+    }
+    if(typeof data.relationId!=="string"||!/^rel_[A-Za-z0-9_-]+$/u.test(data.relationId))return null;
+    const path=relation+"/"+encodeURIComponent(data.relationId);
+    if(op==="relation_delete")return Object.keys(data).length===1?{method:"DELETE",path}:null;
+    if(Object.keys(data).some(k=>!["relationId","hydrate"].includes(k))||!validHydrate(data.hydrate))return null;
+    return {method:"GET",path:path+(data.hydrate?"?"+new URLSearchParams({hydrate:data.hydrate}).toString():"")};
+  }
+  if(args.targetDelegationId!==undefined)return null;
   if (args.modelKey === "person") {
     const person="/api/v1/spaces/"+encodeURIComponent(spaceId)+"/people";
     const isPersonId=typeof id==="string" && /^per_[A-Za-z0-9_-]+$/u.test(id);
@@ -1086,8 +1128,8 @@ export async function handleIdentityOAuthMcp(request, env) {
           ||!Array.isArray(row.requiredScopes)||row.requiredScopes.length<1||row.requiredScopes.length>2
           ||row.requiredScopes[0]!=="resources:read"||new Set(row.requiredScopes).size!==row.requiredScopes.length
           ||row.requiredScopes.some(scope=>!["resources:read","resources:write"].includes(scope)||!authorized.context.scopes.includes(scope))
-          ||(["query","get","file_read"].includes(row.operation)&&row.requiredScopes.length!==1)
-          ||(["create","update","delete","file_upload"].includes(row.operation)&&row.requiredScopes.length!==2))return true;
+          ||(READ_DELEGATED_OPS.includes(row.operation)&&row.requiredScopes.length!==1)
+          ||(["create","update","delete","file_upload","relation_create","relation_delete"].includes(row.operation)&&row.requiredScopes.length!==2))return true;
         const key=row.modelKey+":"+row.operation;
         if(seen.has(key))return true;
         seen.add(key);return false;
@@ -1144,7 +1186,7 @@ export async function handleIdentityOAuthMcp(request, env) {
     const args=message.params.arguments;
     const space=authorized.context.spaceId;
     const composite=message.params.name==="lifespace.request_user_delegation" && Array.isArray(args.operations);
-    let path,method="GET",payload,delegation=null;
+    let path,method="GET",payload,delegation=null,targetDelegation=null;
     if (message.params.name==="lifespace.request_user_delegation") {
       const requested=composite?args.operations:[{modelKey:args.modelKey,operation:args.operation}];
       if (Object.keys(args).some(k=>!["modelKey","operation","operations","reason"].includes(k))
@@ -1157,7 +1199,7 @@ export async function handleIdentityOAuthMcp(request, env) {
           || (composite && Object.keys(op).sort().join(",")!=="modelKey,operation"))
         || new Set(requested.map(op=>op.modelKey+":"+op.operation)).size!==requested.length)
         return rpcError(message.id,-32602,"Invalid User Delegation request");
-      if (requested.some(op=>!["query","get","file_read"].includes(op.operation))
+      if (requested.some(op=>!READ_DELEGATED_OPS.includes(op.operation))
         && !authorized.context.scopes.includes("resources:write"))
         return writeScopeStepUp(message.id,config,request,modern);
       const state=message.params.requestState;
@@ -1219,16 +1261,16 @@ export async function handleIdentityOAuthMcp(request, env) {
         const path=issue.fieldPath?" at "+issue.fieldPath:"";
         return rpcError(message.id,-32602,issue.code+path+": "+issue.repair,200,issue);
       }
-      if (!["query","get","file_read"].includes(args.operation)
+      if (!READ_DELEGATED_OPS.includes(args.operation)
         && !authorized.context.scopes.includes("resources:write"))
         return writeScopeStepUp(message.id,config,request,modern);
-      path=next.path;method=next.method;payload=next.body;delegation=args.delegationId;
+      path=next.path;method=next.method;payload=next.body;delegation=args.delegationId;targetDelegation=args.targetDelegationId??null;
     }
     const coreToken=delegation
       ? await coreExecution(authorized,request,config,env,delegation)
       : execution;
     if (coreToken.error) return json({error:coreToken.error},503);
-    const outcome=await coreJson(env,coreToken.token,path,method,payload,delegation);
+    const outcome=await coreJson(env,coreToken.token,path,method,payload,delegation,null,targetDelegation);
     if(message.params.name==="lifespace.request_user_delegation" && !outcome.error
       && urlElicitationCapable(message.params,modern)) {
       const pending=outcome.payload?.data;

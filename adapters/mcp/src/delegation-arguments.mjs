@@ -7,7 +7,8 @@ const UPLOAD = /^upl_[a-f0-9]{32}$/u;
 const DELEGATION = /^dlg_[A-Za-z0-9_-]+$/u;
 const FIELD = /^[a-z][A-Za-z0-9]{0,62}$/u;
 const ACTION = /^action:[a-z][a-z0-9_-]{0,62}$/u;
-const OPERATIONS = ["query","get","create","update","delete","file_read","file_upload"];
+const RELATION_OPERATIONS=["relation_create","relation_get","relation_query","relation_delete"];
+const OPERATIONS = ["query","get","create","update","delete","file_read","file_upload",...RELATION_OPERATIONS];
 const object = x => x !== null && typeof x === "object" && !Array.isArray(x);
 const schemaString = pattern => ({type:"string",pattern});
 const recordId = schemaString("^(rec|per)_[A-Za-z0-9_-]+$");
@@ -43,12 +44,15 @@ export function delegationExecutionInputSchema() {
     required:["delegationId","modelKey","operation"],
     properties:{
       delegationId:schemaString("^dlg_[A-Za-z0-9_-]+$"),
+      targetDelegationId:schemaString("^dlg_[A-Za-z0-9_-]+$"),
       modelKey:schemaString("^[a-z][a-z0-9_]{1,62}$"),
       operation:{oneOf:[{type:"string",enum:OPERATIONS},{type:"string",pattern:"^action:[a-z][a-z0-9_-]{0,62}$"}]},
       recordId,
       data:{type:"object",description:"Canonical record payload: required model fields/types/enums are owned by the published LifeSpace Model Contract; do not guess them."},
     },
     allOf:[{oneOf:[
+      ...RELATION_OPERATIONS.map(op=>branch(op,["targetDelegationId","data"],{targetDelegationId:schemaString("^dlg_[A-Za-z0-9_-]+$"),
+        data:{type:"object",description:"Use the exact canonical approved relation input from describe_user_delegation."}})),
       branch("file_read",["recordId","data"],{recordId,data:fileReadData}),
       branch("file_upload",["data"],{data:{oneOf:[uploadBegin,uploadComplete]}}),
       branch("get",["recordId"],{recordId}),
@@ -83,7 +87,7 @@ const absent = (args,key) => args[key]!==undefined?unexpected(key):null;
 /** Diagnose caller-supplied structure only; never examine Core state or infer access. */
 export function delegationExecutionArgumentProblem(args) {
   if(!object(args))return invalid("$","Provide a JSON object of execution arguments.");
-  const unknown=keys(args,["delegationId","modelKey","operation","recordId","data"],"");
+  const unknown=keys(args,["delegationId","targetDelegationId","modelKey","operation","recordId","data"],"");
   if(unknown)return unknown;
   if(args.delegationId===undefined)return missing("delegationId",requiredText("delegationId"));
   if(!DELEGATION.test(args.delegationId))return invalid("delegationId","Use the exact dlg_* ID returned by Account approval for this operation.");
@@ -93,6 +97,13 @@ export function delegationExecutionArgumentProblem(args) {
   if(!OPERATIONS.includes(args.operation)&&!ACTION.test(args.operation))
     return invalid("operation","Choose a supported operation from the approved request.");
   const op=args.operation;
+  if(RELATION_OPERATIONS.includes(op)){
+    if(args.targetDelegationId===undefined)return missing("targetDelegationId","Use the independently approved target get Delegation.");
+    if(typeof args.targetDelegationId!=="string"||!DELEGATION.test(args.targetDelegationId)||args.targetDelegationId===args.delegationId)
+      return invalid("targetDelegationId","Provide a distinct approved target get selector.");
+    return absent(args,"recordId")||validData(args);
+  }
+  if(args.targetDelegationId!==undefined)return unexpected("targetDelegationId");
   if(op==="file_read"){
     const record=validRecord(args);if(record)return record;
     const data=validData(args);if(data)return data;

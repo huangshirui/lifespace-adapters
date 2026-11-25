@@ -432,6 +432,13 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
         return Response.json({data:{id:"arq_"+ "f".repeat(32),status:"pending",approvalUrl:"https://account.example.test/delegation?request_id=arq_"+ "f".repeat(32),
           ...(v.operations?{operations:v.operations}:{modelKey:v.modelKey,operation:v.operation})}});
       }
+      if(mayDelegate&&/^\/api\/v1\/spaces\/spc_synthetic\/semantic-relations(?:\/rel_synthetic)?$/u.test(path)){
+        assert.equal(init.headers["x-lifespace-delegation-id"],"dlg_synthetic");
+        assert.equal(init.headers["x-lifespace-target-delegation-id"],"dlg_target");
+        if(denied)return Response.json({error:"private denial"},{status:403});
+        if(init.method==="DELETE")return new Response(null,{status:204});
+        return Response.json({data:{id:"rel_synthetic"}});
+      }
       if (mayDelegate && /^\/api\/v1\/spaces\/spc_synthetic\/models\/task\/file-uploads(?:\/upl_[a-f0-9]{32}\/complete)?$/u.test(path)) {
         assert.equal(init.headers["x-lifespace-delegation-id"],"dlg_synthetic");
         if(denied)return Response.json({error:"private denial"},{status:403});
@@ -1120,6 +1127,35 @@ test("approved operation schema is fetched on demand, not from direct Agent Gran
   }
   const invalid=(await (await call(f,{...args,data:{}})).json()).error;
   assert.equal(invalid.code,-32602);
+});
+
+test("OAuth relation transport preserves both explicit selectors and does not turn relation deletion into record deletion",async()=>{
+  const f=connectedFixture({mayDelegate:true,zeroDirectCatalog:true,oauthScopes:"resources:read resources:write"});
+  const source={kind:"record",modelKey:"task",recordId:"rec_synthetic"};
+  const target={kind:"record",modelKey:"evidence",recordId:"rec_target"};
+  const base={delegationId:"dlg_synthetic",targetDelegationId:"dlg_target",modelKey:"task"};
+  const call=(fixture,args)=>handleIdentityOAuthMcp(rpc("tools/call",{params:{name:"lifespace.execute_user_delegation",arguments:args}}),fixture.env);
+  for(const [op,data,method] of [
+    ["relation_create",{source,target,predicate:"relates_to"},"POST"],
+    ["relation_query",{source,target,limit:5},"GET"],
+    ["relation_get",{relationId:"rel_synthetic"},"GET"],
+    ["relation_delete",{relationId:"rel_synthetic"},"DELETE"],
+  ]){
+    const result=(await (await call(f,{...base,operation:op,data})).json()).result;
+    assert.notEqual(result.isError,true);
+    const last=f.calls.filter(x=>x.service==="CORE"&&x.path.includes("/semantic-relations")).at(-1);
+    assert.equal(last.init.method,method);
+    assert.equal(last.init.headers["x-lifespace-target-delegation-id"],"dlg_target");
+    if(op==="relation_query")assert.equal(new URL(last.url).searchParams.get("targetRecordId"),"rec_target");
+  }
+  for(const args of [
+    {...base,targetDelegationId:undefined,operation:"relation_create",data:{source,target,predicate:"relates_to"}},
+    {...base,targetDelegationId:"dlg_synthetic",operation:"relation_get",data:{relationId:"rel_synthetic"}},
+    {...base,operation:"update",recordId:"rec_synthetic",data:{version:1}},
+  ])assert.equal((await (await call(f,args)).json()).error.code,-32602);
+  const denied=connectedFixture({mayDelegate:true,denied:true,zeroDirectCatalog:true,oauthScopes:"resources:read resources:write"});
+  const result=(await (await call(denied,{...base,operation:"relation_create",data:{source,target,predicate:"relates_to"}})).json()).result;
+  assert.equal(result.isError,true);assert.ok(!result.content[0].text.includes("private denial"));
 });
 
 test("third-party OAuth may request LifeSpace Account URL, status and explicit represented execution", async () => {
