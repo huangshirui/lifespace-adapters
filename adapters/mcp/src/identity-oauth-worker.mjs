@@ -533,12 +533,12 @@ function userDelegationTools() {
     { name: "lifespace.request_user_delegation",
       ...oauthToolSecurity(),
       title: "Request LifeSpace User Delegation",
-      description: "Ask the signed-in user to approve either one Agent operation or a bounded set of 2-8 operations in one LifeSpace Account confirmation. Every operation gets a separate exact Delegation ID; a single approval never broadens an individual operation. Do not request each operation separately if one task needs a combined authorization. No authority until explicit approval.",
+      description: "Ask the signed-in user to approve either one Agent operation or a bounded set of 2-64 operations across at most 8 distinct models in one LifeSpace Account confirmation. Every operation gets a separate exact Delegation ID; a single approval never broadens an individual operation. Do not request each operation separately if one task needs a combined authorization. No authority until explicit approval.",
       inputSchema: {type:"object",additionalProperties:false,required:["reason"],
         properties:{
           modelKey:{type:"string",pattern:"^[a-z][a-z0-9_]{1,62}$"},
           operation:delegatedOpSchema,
-          operations:{type:"array",minItems:2,maxItems:8,items:{type:"object",
+          operations:{type:"array",minItems:2,maxItems:64,description:"At most eight distinct model keys per request",items:{type:"object",
             additionalProperties:false,required:["modelKey","operation"],properties:{
               modelKey:{type:"string",pattern:"^[a-z][a-z0-9_]{1,62}$"},
               operation:delegatedOpSchema,
@@ -1192,12 +1192,12 @@ export async function handleIdentityOAuthMcp(request, env) {
       if (Object.keys(args).some(k=>!["modelKey","operation","operations","reason"].includes(k))
         || typeof args.reason!=="string" || args.reason.trim().length<4 || args.reason.trim().length>250
         || (composite?(args.modelKey!==undefined || args.operation!==undefined
-          || requested.length<2 || requested.length>8)
+          || requested.length<2 || requested.length>64)
           : args.operations!==undefined)
         || requested.some(op=>!op || typeof op!=="object" || Array.isArray(op)
           || !DELEGATION_MODEL.test(op.modelKey||"") || !delegatedOp(op.operation)
           || (composite && Object.keys(op).sort().join(",")!=="modelKey,operation"))
-        || new Set(requested.map(op=>op.modelKey+":"+op.operation)).size!==requested.length)
+        || new Set(requested.map(op=>op.modelKey+":"+op.operation)).size!==requested.length || new Set(requested.map(op=>op.modelKey)).size>8)
         return rpcError(message.id,-32602,"Invalid User Delegation request");
       if (requested.some(op=>!READ_DELEGATED_OPS.includes(op.operation))
         && !authorized.context.scopes.includes("resources:write"))

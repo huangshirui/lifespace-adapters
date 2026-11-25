@@ -418,7 +418,8 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/oauth-delegation-requests" && init.method === "POST") {
         const v = JSON.parse(init.body);
         const operations=v.operations??[{modelKey:v.modelKey,operation:v.operation}];
-        assert.ok(Array.isArray(operations)&&operations.length>=1&&operations.length<=8);
+        assert.ok(Array.isArray(operations)&&operations.length>=1&&operations.length<=64);
+        assert.ok(new Set(operations.map(op=>op.modelKey)).size<=8);
         for(const op of operations){
           assert.ok(["task","person","external_synthetic"].includes(op.modelKey));
           assert.ok(op.modelKey==="person"
@@ -1224,7 +1225,7 @@ test("composite OAuth Tool requests query/get/file_read once and retrieves separ
   const list=await handleIdentityOAuthMcp(rpc("tools/list"),f.env);
   const schema=(await list.json()).result.tools.find(x=>x.name==="lifespace.request_user_delegation").inputSchema;
   assert.equal(schema.properties.operations.minItems,2);
-  assert.equal(schema.properties.operations.maxItems,8);
+  assert.equal(schema.properties.operations.maxItems,64);
   const result=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
     name:"lifespace.request_user_delegation",arguments:args,
   }}),f.env);
@@ -1245,6 +1246,8 @@ test("composite OAuth Tool requests query/get/file_read once and retrieves separ
     {operations:[args.operations[0],args.operations[0]],reason:args.reason},
     {operations:[args.operations[0]],reason:args.reason},
     {operations:args.operations,modelKey:"task",reason:args.reason},
+    {operations:Array.from({length:65},(_,i)=>({modelKey:"task",operation:"action:op_"+i})),reason:args.reason},
+    {operations:Array.from({length:9},(_,i)=>({modelKey:"model_"+i,operation:"get"})),reason:args.reason},
   ]){
     const invalid=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
       name:"lifespace.request_user_delegation",arguments:rejected,
