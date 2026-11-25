@@ -369,11 +369,11 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
         properties:{spaceId:{type:"string",enum:[wrongSpace?"spc_other":"spc_synthetic"]},
           ...(op==="get"||op==="update"||op==="delete"||op==="file_read"
             ?{recordId:{type:"string",minLength:1}}:{}),
-          ...(op==="get"?{}:{data:op==="create"&&mutations
-            ?{$ref:"#/$defs/Create"}:{type:"object"}})},
+          ...(op==="get"?{}:{data:mutations&&["create","update"].includes(op)
+            ?{$ref:op==="create"?"#/$defs/Create":"#/$defs/Update"}:{type:"object"}})},
         required:["spaceId",...(op==="get"||op==="update"||op==="delete"||op==="file_read"?["recordId"]:[]),
           ...(op==="create"||op==="update"||op==="delete"||op==="file_read"||op==="file_upload"?["data"]:[])],
-        ...(op==="create"&&mutations?{$defs:detail.data.mutations.$defs}:{})}};
+        ...(mutations&&["create","update"].includes(op)?{$defs:detail.data.mutations.$defs}:{})}};
   }));
   const operationByRef = new Map(syntheticCatalog.map(row => [row.operationRef,row.operation]));
   const env = {
@@ -418,7 +418,8 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
       if (mayDelegate && path === "/api/v1/spaces/spc_synthetic/oauth-delegation-requests" && init.method === "POST") {
         const v = JSON.parse(init.body);
         const operations=v.operations??[{modelKey:v.modelKey,operation:v.operation}];
-        assert.ok(Array.isArray(operations)&&operations.length>=1&&operations.length<=8);
+        assert.ok(Array.isArray(operations)&&operations.length>=1&&operations.length<=64);
+        assert.ok(new Set(operations.map(op=>op.modelKey)).size<=8);
         for(const op of operations){
           assert.ok(["task","person","external_synthetic"].includes(op.modelKey));
           assert.ok(op.modelKey==="person"
@@ -431,6 +432,13 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
         lastApprovalOps=operations;
         return Response.json({data:{id:"arq_"+ "f".repeat(32),status:"pending",approvalUrl:"https://account.example.test/delegation?request_id=arq_"+ "f".repeat(32),
           ...(v.operations?{operations:v.operations}:{modelKey:v.modelKey,operation:v.operation})}});
+      }
+      if(mayDelegate&&/^\/api\/v1\/spaces\/spc_synthetic\/semantic-relations(?:\/rel_synthetic)?$/u.test(path)){
+        assert.equal(init.headers["x-lifespace-delegation-id"],"dlg_synthetic");
+        assert.equal(init.headers["x-lifespace-target-delegation-id"],"dlg_target");
+        if(denied)return Response.json({error:"private denial"},{status:403});
+        if(init.method==="DELETE")return new Response(null,{status:204});
+        return Response.json({data:{id:"rel_synthetic"}});
       }
       if (mayDelegate && /^\/api\/v1\/spaces\/spc_synthetic\/models\/task\/file-uploads(?:\/upl_[a-f0-9]{32}\/complete)?$/u.test(path)) {
         assert.equal(init.headers["x-lifespace-delegation-id"],"dlg_synthetic");
@@ -475,7 +483,9 @@ function connectedFixture({ denied = false, wrongSpace = false, invalidExchange 
         const model=params.get("modelKey"),op=params.get("operation");
         if(params.get("mode")==="delegation_request"&&eligibilityResponse!==null)return Response.json({data:eligibilityResponse});
         if(params.get("mode")==="configuration"&&configurationResponse!==null)return Response.json({data:configurationResponse});
-        return Response.json({data:{operations:(zeroDirectCatalog?[]:syntheticCatalog).filter(row=>
+        const represented=mayDelegate&&!trustedAgent&&init.headers["x-lifespace-delegation-id"]==="dlg_synthetic";
+        if(represented&&denied)return Response.json({error:"private denial"},{status:403});
+        return Response.json({data:{operations:(zeroDirectCatalog&&!represented?[]:syntheticCatalog).filter(row=>
           ignoreCatalogFilter||((!model||row.modelKey===model)&&(!op||row.operation===op)))}});
       }
       const invocation = /^\/api\/v1\/spaces\/spc_synthetic\/_operations\/(op_[a-f0-9]{64})\/invoke$/u.exec(path);
@@ -1086,6 +1096,69 @@ test("delegation eligibility is separate metadata and never creates direct tool 
   }
 });
 
+test("approved operation schema is fetched on demand, not from direct Agent Grants",async()=>{
+  const f=connectedFixture({mayDelegate:true,zeroDirectCatalog:true,mutations:true,
+    advertisedAccess:["read","write"],oauthScopes:"resources:read resources:write"});
+  const listed=await handleIdentityOAuthMcp(rpc("tools/list"),f.env);
+  const names=(await listed.json()).result.tools.map(tool=>tool.name);
+  assert.ok(names.includes("lifespace.describe_user_delegation"));
+  assert.ok(!names.includes("lifespace.update.task"));
+  const args={delegationId:"dlg_synthetic",modelKey:"task",operation:"update"};
+  const call=(fixture,input)=>handleIdentityOAuthMcp(rpc("tools/call",{params:{
+    name:"lifespace.describe_user_delegation",arguments:input,
+  }}),fixture.env);
+  const result=(await (await call(f,args)).json()).result;
+  assert.equal(result.isError,undefined);
+  const descriptor=JSON.parse(result.content[0].text);
+  assert.deepEqual(descriptor.inputSchema.required,["delegationId","modelKey","operation","recordId","data"]);
+  assert.equal(descriptor.inputSchema.properties.spaceId,undefined);
+  assert.equal(descriptor.inputSchema.properties.data.$ref,"#/$defs/Update");
+  assert.deepEqual(descriptor.inputSchema.$defs.Update.required,["version"]);
+  assert.ok(f.calls.some(x=>x.path.endsWith("/_discovery/operations")&&x.url.includes("modelKey=task&operation=update")
+    &&x.init.headers["x-lifespace-delegation-id"]==="dlg_synthetic"&&x.init.method==="GET"));
+  assert.equal(f.calls.some(x=>x.service==="CORE"&&x.init.method!=="GET"),false);
+  for(const fixture of [
+    connectedFixture({mayDelegate:true,mutations:true,advertisedAccess:["read","write"],denied:true,oauthScopes:"resources:read resources:write"}),
+    connectedFixture({mayDelegate:true,mutations:true,advertisedAccess:["read","write"],ignoreCatalogFilter:true,oauthScopes:"resources:read resources:write"}),
+  ]){
+    const failed=(await (await call(fixture,args)).json()).result;
+    assert.equal(failed.isError,true);
+    assert.equal(failed.structuredContent?.inputSchema,undefined);
+    assert.ok(!failed.content[0].text.includes("private denial"));
+  }
+  const invalid=(await (await call(f,{...args,data:{}})).json()).error;
+  assert.equal(invalid.code,-32602);
+});
+
+test("OAuth relation transport preserves both explicit selectors and does not turn relation deletion into record deletion",async()=>{
+  const f=connectedFixture({mayDelegate:true,zeroDirectCatalog:true,oauthScopes:"resources:read resources:write"});
+  const source={kind:"record",modelKey:"task",recordId:"rec_synthetic"};
+  const target={kind:"record",modelKey:"evidence",recordId:"rec_target"};
+  const base={delegationId:"dlg_synthetic",targetDelegationId:"dlg_target",modelKey:"task"};
+  const call=(fixture,args)=>handleIdentityOAuthMcp(rpc("tools/call",{params:{name:"lifespace.execute_user_delegation",arguments:args}}),fixture.env);
+  for(const [op,data,method] of [
+    ["relation_create",{source,target,predicate:"relates_to"},"POST"],
+    ["relation_query",{source,target,limit:5},"GET"],
+    ["relation_get",{relationId:"rel_synthetic"},"GET"],
+    ["relation_delete",{relationId:"rel_synthetic"},"DELETE"],
+  ]){
+    const result=(await (await call(f,{...base,operation:op,data})).json()).result;
+    assert.notEqual(result.isError,true);
+    const last=f.calls.filter(x=>x.service==="CORE"&&x.path.includes("/semantic-relations")).at(-1);
+    assert.equal(last.init.method,method);
+    assert.equal(last.init.headers["x-lifespace-target-delegation-id"],"dlg_target");
+    if(op==="relation_query")assert.equal(new URL(last.url).searchParams.get("targetRecordId"),"rec_target");
+  }
+  for(const args of [
+    {...base,targetDelegationId:undefined,operation:"relation_create",data:{source,target,predicate:"relates_to"}},
+    {...base,targetDelegationId:"dlg_synthetic",operation:"relation_get",data:{relationId:"rel_synthetic"}},
+    {...base,operation:"update",recordId:"rec_synthetic",data:{version:1}},
+  ])assert.equal((await (await call(f,args)).json()).error.code,-32602);
+  const denied=connectedFixture({mayDelegate:true,denied:true,zeroDirectCatalog:true,oauthScopes:"resources:read resources:write"});
+  const result=(await (await call(denied,{...base,operation:"relation_create",data:{source,target,predicate:"relates_to"}})).json()).result;
+  assert.equal(result.isError,true);assert.ok(!result.content[0].text.includes("private denial"));
+});
+
 test("third-party OAuth may request LifeSpace Account URL, status and explicit represented execution", async () => {
   const f=connectedFixture({mayDelegate:true, oauthScopes:"resources:read resources:write"});
   const listed=await handleIdentityOAuthMcp(rpc("tools/list"),f.env);
@@ -1152,7 +1225,7 @@ test("composite OAuth Tool requests query/get/file_read once and retrieves separ
   const list=await handleIdentityOAuthMcp(rpc("tools/list"),f.env);
   const schema=(await list.json()).result.tools.find(x=>x.name==="lifespace.request_user_delegation").inputSchema;
   assert.equal(schema.properties.operations.minItems,2);
-  assert.equal(schema.properties.operations.maxItems,8);
+  assert.equal(schema.properties.operations.maxItems,64);
   const result=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
     name:"lifespace.request_user_delegation",arguments:args,
   }}),f.env);
@@ -1173,6 +1246,8 @@ test("composite OAuth Tool requests query/get/file_read once and retrieves separ
     {operations:[args.operations[0],args.operations[0]],reason:args.reason},
     {operations:[args.operations[0]],reason:args.reason},
     {operations:args.operations,modelKey:"task",reason:args.reason},
+    {operations:Array.from({length:65},(_,i)=>({modelKey:"task",operation:"action:op_"+i})),reason:args.reason},
+    {operations:Array.from({length:9},(_,i)=>({modelKey:"model_"+i,operation:"get"})),reason:args.reason},
   ]){
     const invalid=await handleIdentityOAuthMcp(rpc("tools/call",{params:{
       name:"lifespace.request_user_delegation",arguments:rejected,

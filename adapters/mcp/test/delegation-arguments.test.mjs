@@ -15,16 +15,21 @@ test("delegated tool publishes per-operation structural branches, including exac
   assert.deepEqual(schema.required,["delegationId","modelKey","operation"]);
   const branches=schema.allOf[0].oneOf;
   assert.deepEqual(branches.map(x=>x.title),[
+    "relation_create","relation_get","relation_query","relation_delete",
     "file_read","file_upload","get","query","create","update","delete","action",
   ]);
-  const read=branches[0];
+  const read=branches.find(b=>b.title==="file_read");
   assert.deepEqual(read.required,["operation","recordId","data"]);
   assert.deepEqual(read.properties.data.required,["fieldKey","fileId"]);
   assert.equal(read.properties.data.additionalProperties,false);
-  const upload=branches[1].properties.data.oneOf;
+  const upload=branches.find(b=>b.title==="file_upload").properties.data.oneOf;
   assert.deepEqual(upload[0].required,["phase","fieldKey","name","contentType","size"]);
   assert.deepEqual(upload[1].required,["phase","uploadId"]);
-  assert.equal(branches[4].properties.data.description.includes("Model Contract"),true);
+  assert.equal(branches.find(b=>b.title==="create").properties.data.description.includes("Model Contract"),true);
+  for(const op of ["relation_create","relation_get","relation_query","relation_delete"]){
+    assert.deepEqual(branches.find(b=>b.title===op).required,["operation","targetDelegationId","data"]);
+    assert.equal(error({...base,operation:op,data:{}}).fieldPath,"targetDelegationId");
+  }
   assert.equal(schema.properties.mode,undefined,"Account alone selects lifetime");
 });
 
